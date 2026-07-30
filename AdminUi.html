@@ -1,0 +1,724 @@
+<script>
+'use strict';
+/* ============================================================================
+ * KOL Campaign Manager v1.11.0 — AdminUi.html
+ * ----------------------------------------------------------------------------
+ * PASTE AS: new Apps Script HTML file named  AdminUi.html
+ * MUST be included in Index.html AFTER Scripts, CampaignWorkspace and Experience
+ * (see 9_Index.html.txt) because it re-wraps their handlers.
+ *
+ * Adds:
+ *   - Settings > Team access: full user CRUD + offboarding reassign (Admin only)
+ *   - Settings > Audit log: filterable ACTIVITY_LOG viewer
+ *   - Destructive actions with typed confirmation:
+ *       delete campaign / shortlist / deliverable / contract / payment,
+ *       remove KOL from campaign
+ *
+ * Follows the existing UI conventions: modal-card + modal-heading +
+ * data-close-modal + form-grid + workspaceModalActions(), optionList(),
+ * escapeHtml/escapeAttr, showToast, server().
+ * ============================================================================ */
+
+state.admin = {
+  data: null,
+  // Audit log được nạp RIÊNG, chỉ khi người dùng mở tab Audit (getActivityLog).
+  // null = chưa nạp lần nào; [] = đã nạp và rỗng. Phân biệt hai cái đó là cần thiết,
+  // nếu không thì một log rỗng sẽ khiến ta gọi server lại mỗi lần đổi tab.
+  activity: null,
+  tab: 'users',
+  activityFilters: { activityEmail: '', activityAction: '', activityEntity: '' },
+  pendingDone: null,
+};
+
+/* Keep references to the handlers installed by the earlier layers so every
+ * action we do not own falls through to them unchanged. */
+const handleMainClickV1110 = handleMainClick;
+const handleModalSubmitV1110 = handleModalSubmit;
+const renderCampaignTabV1110 = renderCampaignTab;
+
+/* ----------------------------------------------------------------------------
+ * Shared helpers
+ * -------------------------------------------------------------------------- */
+
+function adminIsAdmin() {
+  return state.user && state.user.Role === 'Admin';
+}
+
+/**
+ * One modal for every destructive action. Typed confirmation is the only
+ * reliable guard against a misclick deleting a campaign with 40 KOLs on it.
+ *
+ * options: { title, id, label, warnings[], serverFn, payloadKey,
+ *            requireConfirm, allowForce, onDone }
+ */
+function openDangerModal(options) {
+  const warnings = (options.warnings || []).filter(Boolean);
+  state.admin.pendingDone = options.onDone || null;
+
+  openModal(
+    '<form id="danger-form" class="modal-card workspace-modal"' +
+      ' data-server-fn="' + escapeAttr(options.serverFn) + '"' +
+      ' data-payload-key="' + escapeAttr(options.payloadKey) + '"' +
+      ' data-entity-id="' + escapeAttr(options.id) + '"' +
+      ' data-require-confirm="' + (options.requireConfirm ? '1' : '0') + '">' +
+      '<div class="modal-heading"><div><p class="eyebrow">This cannot be undone from the app</p><h2>' +
+        escapeHtml(options.title) + '</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<p class="copy"><strong>' + escapeHtml(options.label || options.id) + '</strong></p>' +
+      (warnings.length
+        ? '<ul class="danger-list">' + warnings.map(function (line) {
+            return '<li>' + escapeHtml(line) + '</li>';
+          }).join('') + '</ul>'
+        : '') +
+      '<p class="admin-hint">A full copy is written to the hidden <code>DELETED_ARCHIVE</code> sheet, ' +
+        'so an Admin can restore it with <code>restoreArchivedRecord</code> if this was a mistake.</p>' +
+      (options.requireConfirm
+        ? '<label>Type <code>' + escapeHtml(options.id) + '</code> to confirm' +
+            '<input name="confirm" autocomplete="off" spellcheck="false" required ' +
+            'placeholder="' + escapeAttr(options.id) + '"></label>'
+        : '') +
+      (options.allowForce
+        ? '<label class="admin-check"><input type="checkbox" name="force" value="TRUE">' +
+            '<span>Force — override the signed-contract / paid-payment protection</span></label>'
+        : '') +
+      '<p class="admin-error is-hidden" id="danger-error"></p>' +
+      '<div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button>' +
+        '<button type="submit" class="danger-button">Delete permanently</button></div>' +
+    '</form>'
+  );
+  const input = modalRoot.querySelector('input[name="confirm"]');
+  if (input) input.focus();
+}
+
+/* ----------------------------------------------------------------------------
+ * Settings page — templates panel kept, team panel rebuilt
+ * -------------------------------------------------------------------------- */
+
+renderSettings = async function () {
+  const heading = pageHeading('Workspace configuration', 'Settings',
+    'Manage templates, users, role access and the audit trail.' + versionLabel(), '');
+  main.innerHTML = heading + '<div class="skeleton"></div>';
+  try {
+    if (!state.operations.settings) state.operations.settings = await server('getSettingsData');
+    if (['Admin', 'Booking'].includes(state.user.Role) && !state.admin.data) {
+      // Không xin activity ở đây — xem ghi chú ở state.admin.activity.
+      state.admin.data = await server('getAdminData', {});
+    }
+    if (state.view !== 'settings') return;
+
+    const data = state.operations.settings || {};
+    const templates = (data.config && data.config.templates) || state.config.templates || {};
+    const canEditTemplates = ['Admin', 'Booking'].includes(state.user.Role);
+
+    const templatePanel = '<article class="card settings-panel">' +
+      '<p class="eyebrow">Market templates</p><h2>Campaign defaults</h2>' +
+      ['VN', 'TH', 'TW'].map(function (market) {
+        const template = templates[market] ||
+          { currency: currencyForMarket(market), platforms: [], targetKols: 20 };
+        const platforms = (template.platforms || []).join(' / ') || 'No platform selected';
+        return '<div class="settings-row"><div><strong>' + market + ' campaign template</strong><small>' +
+          escapeHtml((template.currency || currencyForMarket(market)) + ' · ' + platforms + ' · ' +
+            (template.targetKols || 20) + ' KOLs') +
+          '</small></div><div class="settings-row-actions">' + marketBadge(market) +
+          (canEditTemplates
+            ? '<button class="mini-edit-button" data-action="edit-template" data-market="' + market + '">Edit</button>'
+            : '') +
+          '</div></div>';
+      }).join('') + '</article>';
+
+    main.innerHTML = heading + '<div class="settings-grid">' + templatePanel + adminTeamPanel() + '</div>';
+  } catch (error) {
+    showPageError(error);
+  }
+};
+
+function adminTeamPanel() {
+  const data = state.admin.data;
+  if (!data) {
+    return '<article class="card settings-panel"><p class="eyebrow">Team access</p>' +
+      '<h2>Users &amp; permissions</h2><p class="copy">Only Admin and Booking roles can view the team list. ' +
+      'Members are managed in the USERS sheet.</p></article>';
+  }
+
+  const tabs = [{ id: 'users', label: 'Users' }]
+    .concat(data.canEditUsers ? [{ id: 'audit', label: 'Audit log' }] : []);
+
+  const tabBar = '<nav class="admin-tabs">' + tabs.map(function (tab) {
+    return '<button class="' + (state.admin.tab === tab.id ? 'active' : '') +
+      '" data-action="admin-tab" data-tab="' + tab.id + '">' + escapeHtml(tab.label) + '</button>';
+  }).join('') + '</nav>';
+
+  return '<article class="card settings-panel">' +
+    '<div class="admin-panel-head"><div><p class="eyebrow">Team access</p><h2>Users &amp; permissions</h2></div>' +
+      (data.canEditUsers
+        ? '<button class="primary-button" data-action="admin-new-user">＋ Invite user</button>'
+        : '') +
+    '</div>' + tabBar +
+    '<div id="admin-panel-body">' +
+      (state.admin.tab === 'audit' ? adminAuditView(data) : adminUsersView(data)) +
+    '</div></article>';
+}
+
+function adminUsersView(data) {
+  const users = data.users || [];
+  if (!users.length) return miniEmpty('No users found in the USERS sheet.');
+  const canEdit = data.canEditUsers;
+  const activeCount = users.filter(function (row) { return row.Active; }).length;
+
+  return '<div class="table-summary"><span><strong>' + activeCount + '</strong> active</span>' +
+      '<span><strong>' + data.activeAdmins + '</strong> Admin' + (data.activeAdmins === 1 ? '' : 's') + '</span>' +
+      (canEdit ? '' : '<span>Read-only for your role</span>') + '</div>' +
+    users.map(function (user) {
+      return '<div class="settings-row admin-user-row' + (user.Active ? '' : ' is-inactive') + '">' +
+        '<div class="creator-cell">' + avatar(user.Name || user.Email, user.Market) +
+          '<div><strong>' + escapeHtml(user.Name || user.Email) +
+            (user.Is_Self ? '<span class="admin-you">you</span>' : '') + '</strong>' +
+            '<small>' + escapeHtml(user.Email) + '</small></div></div>' +
+        '<div class="settings-row-actions">' +
+          statusBadge(user.Role) + marketBadge(user.Market) +
+          (user.Active ? '' : '<span class="status status-neutral">Inactive</span>') +
+          (canEdit
+            ? '<button class="mini-edit-button" data-action="admin-edit-user" data-id="' +
+                escapeAttr(user.User_ID) + '">Edit</button>' +
+              (user.Is_Self
+                ? ''
+                : '<button class="mini-edit-button" data-action="admin-toggle-user" data-id="' +
+                    escapeAttr(user.User_ID) + '" data-next="' + (user.Active ? 'FALSE' : 'TRUE') + '">' +
+                    (user.Active ? 'Deactivate' : 'Reactivate') + '</button>')
+            : '') +
+        '</div></div>';
+    }).join('') +
+    (canEdit
+      ? '<div class="admin-panel-foot"><button class="ghost-button" data-action="admin-reassign">' +
+          '⇄ Reassign a leaver’s work</button></div>'
+      : '');
+}
+
+function adminAuditView(data) {
+  // Nguồn là state.admin.activity (nạp riêng), không phải data.activity.
+  const rows = state.admin.activity || [];
+  const filters = state.admin.activityFilters;
+  const actions = Array.from(new Set(rows.map(function (row) { return row.Action; }).filter(Boolean))).sort();
+  const entities = Array.from(new Set(rows.map(function (row) { return row.Entity_Type; }).filter(Boolean))).sort();
+  const emails = Array.from(new Set((data.users || []).map(function (row) { return row.Email; }).filter(Boolean))).sort();
+
+  const filterBar = '<div class="admin-filters">' +
+    '<select id="audit-filter-email" data-admin-filter="1"><option value="">All users</option>' +
+      optionList(emails, filters.activityEmail) + '</select>' +
+    '<select id="audit-filter-action" data-admin-filter="1"><option value="">All actions</option>' +
+      optionList(actions, filters.activityAction) + '</select>' +
+    '<select id="audit-filter-entity" data-admin-filter="1"><option value="">All entities</option>' +
+      optionList(entities, filters.activityEntity) + '</select>' +
+    '<button class="ghost-button" data-action="admin-audit-refresh">↻ Refresh</button></div>';
+
+  if (!rows.length) return filterBar + miniEmpty('No activity recorded for this filter.');
+
+  return filterBar +
+    '<div class="table-scroll admin-audit-scroll"><table class="data-table"><thead><tr>' +
+      '<th>When</th><th>User</th><th>Action</th><th>Entity</th><th>Details</th>' +
+    '</tr></thead><tbody>' + rows.map(function (row) {
+      return '<tr><td><small>' + escapeHtml(workspaceDateTimeClient(row.Timestamp) || '—') + '</small></td>' +
+        '<td><small>' + escapeHtml(row.User_Email || '—') + '</small></td>' +
+        '<td>' + statusBadge(row.Action) + '</td>' +
+        '<td><strong>' + escapeHtml(row.Entity_Type || '—') + '</strong>' +
+          '<small class="cell-sub">' + escapeHtml(row.Entity_ID || '') + '</small></td>' +
+        '<td class="admin-details"><small>' + escapeHtml(row.Details || '—') + '</small></td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+/**
+ * Nạp audit log theo bộ lọc hiện tại. Dùng getActivityLog — endpoint Admin-only đã có
+ * sẵn — thay vì kéo kèm qua getAdminData mỗi lần mở Settings.
+ */
+async function adminLoadActivity_() {
+  const payload = Object.assign({ activityLimit: 200 }, state.admin.activityFilters);
+  state.admin.activity = await server('getActivityLog', payload);
+  return state.admin.activity;
+}
+
+async function adminReloadPanel(showSpinner) {
+  const body = document.getElementById('admin-panel-body');
+  if (showSpinner && body) body.innerHTML = '<div class="skeleton"></div>';
+  state.admin.data = await server('getAdminData', {});
+  // Chỉ làm mới audit log khi tab Audit đang mở — đổi bộ lọc cũng đi qua đây.
+  if (state.admin.tab === 'audit') await adminLoadActivity_();
+  const target = document.getElementById('admin-panel-body');
+  if (!target) return;
+  target.innerHTML = state.admin.tab === 'audit'
+    ? adminAuditView(state.admin.data)
+    : adminUsersView(state.admin.data);
+}
+
+/* ----------------------------------------------------------------------------
+ * User modals
+ * -------------------------------------------------------------------------- */
+
+function openUserModal(userId) {
+  const data = state.admin.data || {};
+  const user = (data.users || []).find(function (row) { return row.User_ID === userId; }) || null;
+  const isNew = !user;
+  const roles = data.roles || ['Admin', 'Booking', 'Marketing'];
+  const markets = data.markets || ['VN', 'TH', 'TW', 'Global'];
+
+  openModal(
+    '<form id="user-form" class="modal-card workspace-modal" data-user-id="' +
+      escapeAttr(isNew ? '' : user.User_ID) + '">' +
+      '<div class="modal-heading"><div><p class="eyebrow">Team access</p><h2>' +
+        (isNew ? 'Invite user' : 'Edit ' + escapeHtml(user.Name || user.Email)) + '</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<label>Work email *<input name="Email" type="email" required value="' +
+        escapeAttr(isNew ? '' : user.Email) + '"' + (isNew ? '' : ' readonly') + '></label>' +
+      '<p class="admin-hint">' + (isNew
+        ? 'Must be the Google account they sign in with.'
+        : 'Email is the identity key and cannot be changed — deactivate and re-invite instead.') + '</p>' +
+      '<label>Display name<input name="Name" value="' + escapeAttr(isNew ? '' : (user.Name || '')) +
+        '" placeholder="Nguyen Van A"></label>' +
+      '<div class="form-grid">' +
+        '<label>Role *<select name="Role" required>' +
+          optionList(roles, isNew ? 'Marketing' : user.Role) + '</select></label>' +
+        '<label>Market *<select name="Market" required>' +
+          optionList(markets, isNew ? 'VN' : user.Market) + '</select></label>' +
+      '</div>' +
+      '<p class="admin-hint"><strong>Admin</strong> — everything, including deletes and user management. ' +
+        '<strong>Booking</strong> — campaigns, fees, contracts, payments, full KOL database. ' +
+        '<strong>Marketing</strong> — only campaigns they are assigned to, and Deal-status KOLs. ' +
+        'Market <strong>Global</strong> sees every market.</p>' +
+      '<p class="admin-error is-hidden" id="user-form-error"></p>' +
+      workspaceModalActions(isNew ? 'Send access' : 'Save changes') +
+    '</form>'
+  );
+}
+
+function openReassignModal() {
+  const data = state.admin.data || {};
+  const users = data.users || [];
+  const active = users.filter(function (row) { return row.Active; });
+
+  openModal(
+    '<form id="reassign-form" class="modal-card workspace-modal">' +
+      '<div class="modal-heading"><div><p class="eyebrow">Offboarding</p><h2>Reassign work</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<p class="copy">Moves campaign owner, shortlist owner, KOL PIC, contract owner, payment owner and ' +
+        'campaign marketing assignments from one person to another. Preview first, then apply.</p>' +
+      '<div class="form-grid">' +
+        '<label>From *<select name="fromEmail" required><option value="">Select…</option>' +
+          optionList(users.map(function (row) { return row.Email; }), '') + '</select></label>' +
+        '<label>To *<select name="toEmail" required><option value="">Select…</option>' +
+          optionList(active.map(function (row) { return row.Email; }), '') + '</select></label>' +
+      '</div>' +
+      '<div id="reassign-preview"></div>' +
+      '<p class="admin-error is-hidden" id="reassign-error"></p>' +
+      '<div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button>' +
+        '<button type="button" class="ghost-button" data-action="reassign-preview">Preview</button>' +
+        '<button type="submit" class="primary-button">Reassign</button></div>' +
+    '</form>'
+  );
+}
+
+async function runReassignPreview(button) {
+  const form = document.getElementById('reassign-form');
+  const preview = document.getElementById('reassign-preview');
+  if (!form || !preview) return;
+  const payload = formToObject(form);
+  if (!payload.fromEmail || !payload.toEmail) {
+    preview.innerHTML = '<p class="admin-error">Pick both users first.</p>';
+    return;
+  }
+  button.disabled = true;
+  try {
+    const result = await server('reassignUserWork',
+      { fromEmail: payload.fromEmail, toEmail: payload.toEmail, dryRun: 'TRUE' });
+    const keys = Object.keys(result.summary || {}).filter(function (key) { return result.summary[key] > 0; });
+    preview.innerHTML = keys.length
+      ? '<ul class="danger-list">' + keys.map(function (key) {
+          return '<li>' + escapeHtml(key) + ': <strong>' + result.summary[key] + '</strong> record(s)</li>';
+        }).join('') + '</ul>'
+      : '<p class="admin-hint">Nothing is currently assigned to that user.</p>';
+  } catch (error) {
+    preview.innerHTML = '<p class="admin-error">' + escapeHtml(error.message) + '</p>';
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * Destructive action launchers
+ * -------------------------------------------------------------------------- */
+
+function confirmDeleteCampaign() {
+  const data = state.campaignDetail;
+  if (!data || !data.campaign) return;
+  const campaign = data.campaign;
+  const kolCount = (data.campaignKols || []).length;
+  const deliverableCount = (data.deliverables || []).length;
+
+  openDangerModal({
+    title: 'Delete this campaign',
+    id: campaign.Campaign_ID,
+    label: (campaign.App ? campaign.App + ' · ' : '') + campaign.Campaign_Name,
+    warnings: [
+      kolCount ? kolCount + ' campaign KOL row(s) will be deleted' : '',
+      deliverableCount ? deliverableCount + ' deliverable(s) and their feedback will be deleted' : '',
+      'Contract and payment records are deleted — the Drive Docs and PDFs are kept',
+      'Linked shortlists are unlinked, not deleted',
+    ],
+    requireConfirm: true,
+    allowForce: true,
+    serverFn: 'deleteCampaign',
+    payloadKey: 'Campaign_ID',
+    onDone: function () {
+      state.campaignDetail = null;
+      state.campaigns = (state.campaigns || []).filter(function (row) {
+        return row.Campaign_ID !== campaign.Campaign_ID;
+      });
+      state.operations.contracts = null;
+      state.operations.payments = null;
+      state.operations.contractData = null;
+      state.operations.performance = null;
+      navigate('campaigns');
+      showToast('Campaign deleted and archived.');
+    },
+  });
+}
+
+function confirmRemoveCampaignKol(campaignKolId) {
+  const data = state.campaignDetail || {};
+  const row = (data.campaignKols || []).find(function (item) {
+    return item.Campaign_KOL_ID === campaignKolId;
+  }) || {};
+
+  openDangerModal({
+    title: 'Remove KOL from campaign',
+    id: campaignKolId,
+    label: '@' + (row.Username || row.Display_Name || campaignKolId),
+    warnings: [
+      'Deliverables, content feedback, contract and payment rows for this booking are deleted',
+      'The KOL stays in the KOL Database — only this campaign booking is removed',
+    ],
+    requireConfirm: false,
+    allowForce: true,
+    serverFn: 'removeCampaignKol',
+    payloadKey: 'Campaign_KOL_ID',
+    onDone: function () {
+      showToast('KOL removed from campaign.');
+      if (data.campaign) openCampaign(data.campaign.Campaign_ID);
+    },
+  });
+}
+
+function confirmDeleteDeliverable(deliverableId) {
+  const data = state.campaignDetail || {};
+  const row = (data.deliverables || []).find(function (item) {
+    return item.Deliverable_ID === deliverableId;
+  }) || {};
+
+  openDangerModal({
+    title: 'Delete deliverable',
+    id: deliverableId,
+    label: (row.Type || 'Deliverable') + ' · @' + (row.Username || '—'),
+    warnings: [
+      'The feedback thread for this deliverable is deleted',
+      row.Post_URL ? 'This deliverable has a live post URL — its metrics will be lost, so Force is required' : '',
+    ],
+    requireConfirm: false,
+    allowForce: true,
+    serverFn: 'deleteDeliverable',
+    payloadKey: 'Deliverable_ID',
+    onDone: function () {
+      showToast('Deliverable deleted.');
+      if (data.campaign) openCampaign(data.campaign.Campaign_ID);
+    },
+  });
+}
+
+function confirmDeleteShortlist(shortlistId) {
+  const shortlist = (state.shortlists || []).find(function (row) {
+    return row.Shortlist_ID === shortlistId;
+  }) || {};
+
+  openDangerModal({
+    title: 'Delete shortlist',
+    id: shortlistId,
+    label: shortlist.Shortlist_Name || shortlistId,
+    warnings: [
+      'All picks and review notes in this shortlist are deleted',
+      'Creator accounts in the KOL Database are not affected',
+    ],
+    requireConfirm: true,
+    allowForce: false,
+    serverFn: 'deleteShortlist',
+    payloadKey: 'Shortlist_ID',
+    onDone: function () {
+      state.shortlists = (state.shortlists || []).filter(function (row) {
+        return row.Shortlist_ID !== shortlistId;
+      });
+      state.shortlistDetailData = null;
+      navigate('shortlists');
+      showToast('Shortlist deleted.');
+    },
+  });
+}
+
+function confirmDeleteOperationRow(type, id) {
+  const isContract = type === 'contracts';
+  const idField = isContract ? 'Contract_ID' : 'Payment_ID';
+
+  // These buttons are rendered in two different places with two different data
+  // sources: documentsTable() inside a campaign (state.campaignDetail) and the
+  // Operations page (state.operations). Look in both, nearest first.
+  const detail = state.campaignDetail || {};
+  const inCampaign = state.view === 'campaigns' && Boolean(detail.campaign);
+  const pools = inCampaign
+    ? [detail[type] || [], state.operations[type] || []]
+    : [state.operations[type] || [], detail[type] || []];
+
+  let row = {};
+  pools.some(function (pool) {
+    const match = pool.find(function (item) { return item[idField] === id; });
+    if (match) row = match;
+    return Boolean(match);
+  });
+
+  openDangerModal({
+    title: isContract ? 'Delete contract record' : 'Delete payment record',
+    id: id,
+    label: isContract
+      ? (row.Contract_No || id) + ' · ' + (row.Creator_Name || '')
+      : (row.Campaign_Name || '') + ' · ' + money(row.Amount, row.Currency),
+    warnings: isContract
+      ? ['The Google Doc and PDF in Drive are NOT deleted — only the registry row',
+         'Signed contracts are blocked; set Sign_Status to Cancelled instead']
+      : ['Paid payments are blocked — reverse the payment rather than deleting it'],
+    requireConfirm: true,
+    allowForce: true,
+    serverFn: isContract ? 'deleteContractRecord' : 'deletePaymentRecord',
+    payloadKey: isContract ? 'Contract_ID' : 'Payment_ID',
+    onDone: function () {
+      state.operations[type] = null;
+      state.operations.contractData = null;
+      if (typeof state.contractHub === 'object' && state.contractHub) state.contractHub.data = null;
+      showToast(isContract ? 'Contract record deleted.' : 'Payment record deleted.');
+      // Inside a campaign, state.campaignDetail is the source of truth and a bare
+      // render() would redraw the deleted row from stale memory.
+      if (inCampaign) return openCampaign(detail.campaign.Campaign_ID);
+      return render();
+    },
+  });
+}
+
+/* ----------------------------------------------------------------------------
+ * Campaign Overview — Danger zone (Admin only)
+ * -------------------------------------------------------------------------- */
+
+renderCampaignTab = function (data) {
+  const html = renderCampaignTabV1110(data);
+  if (state.campaignTab !== 'Overview' || !adminIsAdmin()) return html;
+  const campaign = (data && data.campaign) || {};
+  return html +
+    '<section class="card danger-zone"><div><p class="eyebrow">Danger zone</p>' +
+      '<h2>Delete this campaign</h2>' +
+      '<p class="copy">Removes the campaign and every KOL booking, deliverable, contract and payment row ' +
+        'attached to it. A restorable copy is written to DELETED_ARCHIVE.</p></div>' +
+      '<button class="danger-button" data-action="delete-campaign" data-id="' +
+        escapeAttr(campaign.Campaign_ID || '') + '">Delete campaign</button></section>';
+};
+
+/* ----------------------------------------------------------------------------
+ * Event wiring
+ * -------------------------------------------------------------------------- */
+
+handleMainClick = function (event) {
+  const node = event.target.closest('[data-action]');
+  if (!node) return handleMainClickV1110(event);
+  const action = node.dataset.action;
+
+  /* Settings > team + audit */
+  if (action === 'admin-tab') {
+    state.admin.tab = node.dataset.tab;
+    document.querySelectorAll('.admin-tabs button').forEach(function (button) {
+      button.classList.toggle('active', button.dataset.tab === state.admin.tab);
+    });
+    const body = document.getElementById('admin-panel-body');
+    // Lần ĐẦU mở tab Audit thì mới đi lấy log. state.admin.activity === null nghĩa là
+    // chưa lấy lần nào; [] nghĩa là đã lấy và rỗng — phân biệt hai cái để một log rỗng
+    // không khiến ta gọi server lại mỗi lần đổi tab.
+    if (state.admin.tab === 'audit' && state.admin.activity === null) {
+      if (body) body.innerHTML = '<div class="skeleton"></div>';
+      adminLoadActivity_()
+        .then(function () {
+          const target = document.getElementById('admin-panel-body');
+          if (target && state.admin.tab === 'audit') target.innerHTML = adminAuditView(state.admin.data || {});
+        })
+        .catch(function (error) {
+          const target = document.getElementById('admin-panel-body');
+          if (target) target.innerHTML = '<p class="admin-error">' + escapeHtml(error.message) + '</p>';
+        });
+      return;
+    }
+    if (body && state.admin.data) {
+      body.innerHTML = state.admin.tab === 'audit'
+        ? adminAuditView(state.admin.data)
+        : adminUsersView(state.admin.data);
+    }
+    return;
+  }
+  if (action === 'admin-new-user') return openUserModal('');
+  if (action === 'admin-edit-user') return openUserModal(node.dataset.id);
+  if (action === 'admin-reassign') return openReassignModal();
+  if (action === 'admin-toggle-user') return runToggleUser(node);
+  if (action === 'admin-audit-refresh') return runAuditRefresh(node);
+
+  /* Destructive actions */
+  if (action === 'delete-campaign') return confirmDeleteCampaign();
+  if (action === 'remove-campaign-kol') return confirmRemoveCampaignKol(node.dataset.id);
+  if (action === 'delete-deliverable') return confirmDeleteDeliverable(node.dataset.id);
+  if (action === 'delete-shortlist') return confirmDeleteShortlist(node.dataset.id);
+  if (action === 'delete-contract') return confirmDeleteOperationRow('contracts', node.dataset.id);
+  if (action === 'delete-payment') return confirmDeleteOperationRow('payments', node.dataset.id);
+
+  return handleMainClickV1110(event);
+};
+
+/* Extra modal click handling — additive, the core handleModalClick still runs. */
+modalRoot.addEventListener('click', function (event) {
+  const node = event.target.closest('[data-action="reassign-preview"]');
+  if (node) runReassignPreview(node);
+});
+
+/* Audit filter dropdowns live inside #main. */
+main.addEventListener('change', function (event) {
+  if (!event.target || !event.target.dataset || event.target.dataset.adminFilter !== '1') return;
+  const value = function (id) {
+    const node = document.getElementById(id);
+    return node ? node.value : '';
+  };
+  state.admin.activityFilters = {
+    activityEmail: value('audit-filter-email'),
+    activityAction: value('audit-filter-action'),
+    activityEntity: value('audit-filter-entity'),
+  };
+  // Bộ lọc chỉ tác động lên audit log, nên buộc lấy lại nó thay vì tin vào bản cache.
+  state.admin.activity = null;
+  adminReloadPanel(true).catch(function (error) { showToast(error.message, true); });
+});
+
+async function runToggleUser(button) {
+  const userId = button.dataset.id;
+  const next = button.dataset.next === 'TRUE';
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '…';
+  try {
+    await server('setUserActive', { User_ID: userId, Active: next ? 'TRUE' : 'FALSE' });
+    await adminReloadPanel(false);
+    showToast(next ? 'User reactivated.' : 'User deactivated.');
+  } catch (error) {
+    showToast(error.message, true);
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function runAuditRefresh(button) {
+  button.disabled = true;
+  try {
+    await adminReloadPanel(true);
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+handleModalSubmit = async function (event) {
+  const form = event.target;
+  const localForms = ['user-form', 'reassign-form', 'danger-form'];
+  if (localForms.indexOf(form.id) === -1) return handleModalSubmitV1110(event);
+  event.preventDefault();
+  if (form.id === 'user-form') return submitUserForm(form);
+  if (form.id === 'reassign-form') return submitReassignForm(form);
+  return submitDangerForm(form);
+};
+
+function adminShowFormError(nodeId, message) {
+  const node = document.getElementById(nodeId);
+  if (!node) return showToast(message, true);
+  node.textContent = message;
+  node.classList.remove('is-hidden');
+  return null;
+}
+
+async function submitUserForm(form) {
+  const payload = formToObject(form);
+  const userId = form.dataset.userId;
+  const errorNode = document.getElementById('user-form-error');
+  if (errorNode) errorNode.classList.add('is-hidden');
+  setFormBusy(form, true);
+  try {
+    if (userId) {
+      await server('updateUser', {
+        User_ID: userId,
+        Name: payload.Name,
+        Role: payload.Role,
+        Market: payload.Market,
+      });
+    } else {
+      await server('createUser', payload);
+    }
+    closeModal();
+    await adminReloadPanel(false);
+    showToast(userId ? 'User updated.' : 'User invited — they can open the app now.');
+  } catch (error) {
+    adminShowFormError('user-form-error', error.message);
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+async function submitReassignForm(form) {
+  const payload = formToObject(form);
+  const errorNode = document.getElementById('reassign-error');
+  if (errorNode) errorNode.classList.add('is-hidden');
+  setFormBusy(form, true);
+  try {
+    const result = await server('reassignUserWork', {
+      fromEmail: payload.fromEmail,
+      toEmail: payload.toEmail,
+    });
+    const total = Object.keys(result.summary || {}).reduce(function (sum, key) {
+      return sum + Number(result.summary[key] || 0);
+    }, 0);
+    closeModal();
+    state.campaigns = await server('listCampaigns', {});
+    await adminReloadPanel(false);
+    showToast(total + ' record(s) reassigned to ' + result.to + '.');
+  } catch (error) {
+    adminShowFormError('reassign-error', error.message);
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+async function submitDangerForm(form) {
+  const values = formToObject(form);
+  const payload = {};
+  payload[form.dataset.payloadKey] = form.dataset.entityId;
+  if (form.dataset.requireConfirm === '1') payload.confirm = values.confirm || '';
+  if (values.force) payload.force = 'TRUE';
+
+  const errorNode = document.getElementById('danger-error');
+  if (errorNode) errorNode.classList.add('is-hidden');
+  setFormBusy(form, true);
+  try {
+    await server(form.dataset.serverFn, payload);
+    const done = state.admin.pendingDone;
+    state.admin.pendingDone = null;
+    closeModal();
+    if (typeof done === 'function') done();
+  } catch (error) {
+    adminShowFormError('danger-error', error.message);
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+</script>

@@ -1,0 +1,615 @@
+<script>
+'use strict';
+/* ============================================================================
+ * KOL Campaign Manager v1.11.0 — ContractUi.html
+ * ----------------------------------------------------------------------------
+ * PASTE AS: new Apps Script HTML file named  ContractUi.html
+ * Include in Index.html LAST (see 9_Index.html.txt).
+ *
+ * PHASE 4 UI:
+ *   - Operations > Contracts gains an acceptance (BBNT) column and workflow
+ *   - "Send info form" button for creators with incomplete legal details
+ *   - Contract generation switches to generateContractV2 (all markets)
+ *   - Settings gains a per-market contract configuration panel + legacy import
+ * ========================================================================== */
+
+state.contractHub = { data: null, campaignId: '' };
+
+const handleMainClickV1110Contract = handleMainClick;
+const handleModalSubmitV1110Contract = handleModalSubmit;
+const renderOperationsV1110 = renderOperations;
+const renderSettingsV1110Contract = renderSettings;
+
+function contractIsAdmin() {
+  return state.user && state.user.Role === 'Admin';
+}
+
+/* ----------------------------------------------------------------------------
+ * Operations > Contracts — append the acceptance workflow table
+ * -------------------------------------------------------------------------- */
+
+renderOperations = async function (type) {
+  await renderOperationsV1110(type);
+  if (type !== 'contracts' || state.view !== 'contracts') return;
+
+  const holder = document.createElement('div');
+  holder.id = 'contract-hub-panel';
+  holder.innerHTML = '<section class="card"><p class="eyebrow">Acceptance</p>' +
+    '<h2>Contracts &amp; acceptance certificates</h2><div class="skeleton"></div></section>';
+  main.appendChild(holder);
+
+  try {
+    if (!state.contractHub.data) state.contractHub.data = await server('getContractHubData', {});
+    if (state.view !== 'contracts') return;
+    const target = document.getElementById('contract-hub-panel');
+    if (target) target.innerHTML = contractHubPanel(state.contractHub.data);
+  } catch (error) {
+    const target = document.getElementById('contract-hub-panel');
+    if (target) {
+      target.innerHTML = '<section class="card"><p class="eyebrow">Acceptance</p>' +
+        '<h2>Contracts &amp; acceptance certificates</h2>' +
+        '<p class="admin-error">' + escapeHtml(error.message) + '</p></section>';
+    }
+  }
+};
+
+function contractHubPanel(data) {
+  const rows = data.contracts || [];
+  // Da bo canh bao "No contract template configured for ...". No hien tren MOI
+  // lan mo Contract hub, khong the tat, va cho cau hinh da nam san trong
+  // Settings > Contract templates. Giu bien de hai cho dung ben duoi khong doi.
+  const warning = '';
+
+  if (!rows.length) {
+    return '<section class="card"><div class="card-head"><div><p class="eyebrow">Acceptance</p>' +
+      '<h2>Contracts &amp; acceptance certificates</h2></div></div>' + warning +
+      miniEmpty('No contracts generated yet. Generate one from a campaign’s KOLs tab.') + '</section>';
+  }
+
+  return '<section class="card"><div class="card-head"><div><p class="eyebrow">Acceptance</p>' +
+    '<h2>Contracts &amp; acceptance certificates</h2></div>' +
+    '<span class="status status-blue">' + rows.length + ' contract(s)</span></div>' + warning +
+    '<div class="table-scroll"><table class="data-table"><thead><tr>' +
+      '<th>Contract</th><th>Creator</th><th>Sign status</th><th>Acceptance</th><th>Total</th><th></th>' +
+    '</tr></thead><tbody>' + rows.map(contractHubRow).join('') + '</tbody></table></div></section>';
+}
+
+/**
+ * Next-step buttons for the Sign status cell. Only the transitions that are
+ * actually reachable are offered; correcting a mistake stays a sheet edit.
+ */
+function contractStatusActions(row) {
+  const status = String(row.Sign_Status || '').trim();
+  if (status === 'Signed' || status === 'Cancelled') return '';
+  const button = function (next, label) {
+    return '<button class="mini-edit-button" data-action="contract-set-status" data-id="' +
+      escapeAttr(row.Contract_ID) + '" data-status="' + escapeAttr(next) + '">' + label + '</button>';
+  };
+  return '<small class="cell-sub">' +
+    (status === 'Sent' ? '' : button('Sent', 'Mark sent')) +
+    button('Signed', 'Mark signed') +
+    '</small>';
+}
+
+function contractHubRow(row) {
+  const acceptance = row.Acceptance;
+  const links = [
+    safeWorkspaceUrl(row.Contract_URL) ? '<a href="' + escapeAttr(safeWorkspaceUrl(row.Contract_URL)) + '" target="_blank" rel="noopener">Doc ↗</a>' : '',
+    safeWorkspaceUrl(row.Contract_PDF_URL) ? '<a href="' + escapeAttr(safeWorkspaceUrl(row.Contract_PDF_URL)) + '" target="_blank" rel="noopener">PDF ↗</a>' : '',
+  ].filter(Boolean).join(' · ') || '—';
+
+  let acceptanceCell;
+  let acceptanceAction;
+  if (!acceptance) {
+    acceptanceCell = '<span class="status status-neutral">Not started</span>';
+    acceptanceAction = '<button class="mini-edit-button" data-action="contract-prepare-acceptance" data-id="' +
+      escapeAttr(row.Contract_ID) + '">Prepare BBNT</button>';
+  } else if (!acceptance.Acceptance_URL) {
+    const ready = (acceptance.Lines || []).filter(function (line) {
+      return String(line.Status) === 'Ready';
+    }).length;
+    const total = (acceptance.Lines || []).length;
+    acceptanceCell = '<span class="status status-amber">Draft ' + ready + '/' + total + ' evidence</span>';
+    acceptanceAction = '<button class="mini-edit-button" data-action="contract-acceptance-detail" data-id="' +
+      escapeAttr(acceptance.Acceptance_ID) + '">Evidence</button>';
+  } else {
+    const accStatus = String(acceptance.Status || '').trim();
+    acceptanceCell = '<span class="status status-mint">' + escapeHtml(acceptance.Acceptance_No) + '</span>' +
+      (safeWorkspaceUrl(acceptance.Acceptance_PDF_URL)
+        ? ' <a href="' + escapeAttr(safeWorkspaceUrl(acceptance.Acceptance_PDF_URL)) + '" target="_blank" rel="noopener">PDF ↗</a>'
+        : '') +
+      (accStatus === 'Signed'
+        ? '<small class="cell-sub">Signed ' + escapeHtml(workspaceDate(acceptance.Signed_Date) || '') + '</small>'
+        : '');
+    acceptanceAction = accStatus === 'Signed' ? '' :
+      '<button class="mini-edit-button" data-action="acceptance-set-status" data-id="' +
+        escapeAttr(acceptance.Acceptance_ID) + '" data-status="Signed">Mark signed</button>';
+  }
+
+  const creatorCell = row.Creator_Complete
+    ? escapeHtml(row.Creator_Name || '—')
+    : escapeHtml(row.Creator_Name || '—') +
+      '<small class="cell-sub" style="color:#bd7411">Missing: ' +
+      escapeHtml((row.Missing_Creator_Fields || []).join(', ').replace(/_/g, ' ')) + '</small>' +
+      '<button class="mini-edit-button" data-action="contract-send-form" data-id="' +
+        escapeAttr(row.Creator_ID) + '">Send info form</button>';
+
+  return '<tr><td><strong>' + escapeHtml(row.Contract_No || '—') + '</strong>' +
+      '<small class="cell-sub">' + links + '</small></td>' +
+    '<td>' + creatorCell + '</td>' +
+    '<td>' + statusBadge(row.Sign_Status) + contractStatusActions(row) + '</td>' +
+    '<td>' + acceptanceCell + '</td>' +
+    '<td>' + (acceptance ? money(acceptance.Total_Amount, acceptance.Currency) : '—') + '</td>' +
+    '<td>' + acceptanceAction + '</td></tr>';
+}
+
+/* ----------------------------------------------------------------------------
+ * Acceptance modals
+ * -------------------------------------------------------------------------- */
+
+function openPrepareAcceptanceModal(contractId) {
+  const row = ((state.contractHub.data || {}).contracts || []).find(function (item) {
+    return item.Contract_ID === contractId;
+  }) || {};
+
+  openModal(
+    '<form id="acceptance-prepare-form" class="modal-card workspace-modal" data-id="' +
+      escapeAttr(contractId) + '">' +
+      '<div class="modal-heading"><div><p class="eyebrow">Acceptance certificate</p>' +
+        '<h2>Prepare BBNT for ' + escapeHtml(row.Contract_No || contractId) + '</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<div class="modal-note"><span>i</span><p>One line is created per deliverable that already has a ' +
+        'post URL, with the contract value split evenly between them. You then attach an evidence ' +
+        'screenshot per line before the document is generated.</p></div>' +
+      '<label>Image usage fee<input type="number" min="0" name="Image_Usage_Fee" value="0">' +
+        '<span class="admin-hint">Extra fee for reusing the creator’s images in ads. Leave 0 if none.</span></label>' +
+      '<label>Notes<textarea name="Notes" rows="2"></textarea></label>' +
+      '<p class="admin-error is-hidden" id="acceptance-prepare-error"></p>' +
+      workspaceModalActions('Create lines') +
+    '</form>'
+  );
+}
+
+function openAcceptanceDetailModal(acceptanceId) {
+  const contracts = (state.contractHub.data || {}).contracts || [];
+  const parent = contracts.find(function (item) {
+    return item.Acceptance && item.Acceptance.Acceptance_ID === acceptanceId;
+  });
+  if (!parent) return showToast('Acceptance not found — refresh the page.', true);
+  const acceptance = parent.Acceptance;
+  const lines = acceptance.Lines || [];
+  const allReady = lines.length && lines.every(function (line) { return String(line.Status) === 'Ready'; });
+
+  openModal(
+    '<div class="modal-card workspace-modal" id="acceptance-detail">' +
+      '<div class="modal-heading"><div><p class="eyebrow">' + escapeHtml(parent.Contract_No || '') + '</p>' +
+        '<h2>Acceptance evidence</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<div class="modal-note"><span>i</span><p>Paste a Google Drive link per line — either a single ' +
+        'image file or a folder of screenshots. Multiple links can be separated by commas or new lines. ' +
+        'The images are embedded into the BBNT document.</p></div>' +
+      lines.map(function (line) {
+        return '<form class="acceptance-line-form" data-id="' + escapeAttr(line.Acceptance_Line_ID) + '">' +
+          '<label><strong>#' + escapeHtml(String(line.Line_No)) + '</strong> ' +
+            escapeHtml(line.Platform || '') + ' · ' +
+            (safeWorkspaceUrl(line.Post_URL)
+              ? '<a href="' + escapeAttr(safeWorkspaceUrl(line.Post_URL)) + '" target="_blank" rel="noopener">post ↗</a>'
+              : 'no post link') +
+            ' · ' + money(line.Content_Amount, acceptance.Currency) +
+            '<textarea name="Evidence_URLs" rows="2" placeholder="https://drive.google.com/file/d/…">' +
+              escapeHtml(line.Evidence_URLs || '') + '</textarea></label>' +
+          '<div class="modal-actions" style="margin-top:8px;padding-top:10px">' +
+            (String(line.Status) === 'Ready'
+              ? '<span class="status status-mint">Evidence attached</span>'
+              : '<span class="status status-amber">Needs evidence</span>') +
+            '<button type="submit" class="ghost-button">Save line</button></div>' +
+        '</form>';
+      }).join('') +
+      '<p class="admin-error is-hidden" id="acceptance-detail-error"></p>' +
+      '<div class="modal-actions">' +
+        '<button type="button" class="ghost-button" data-close-modal>Close</button>' +
+        '<button type="button" class="primary-button" data-action="contract-generate-acceptance" ' +
+          'data-id="' + escapeAttr(acceptanceId) + '"' + (allReady ? '' : ' disabled') + '>' +
+          (allReady ? 'Generate BBNT document' : 'Attach all evidence first') + '</button>' +
+      '</div>' +
+    '</div>'
+  );
+}
+
+async function openCreatorFormLinkModal(creatorId) {
+  openModal(
+    '<div class="modal-card workspace-modal">' +
+      '<div class="modal-heading"><div><p class="eyebrow">Creator information</p>' +
+        '<h2>Generating link…</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<div class="skeleton"></div></div>'
+  );
+  try {
+    const result = await server('createCreatorFormLink', { Creator_ID: creatorId });
+    openModal(
+      '<div class="modal-card workspace-modal">' +
+        '<div class="modal-heading"><div><p class="eyebrow">Creator information</p>' +
+          '<h2>Send this link to ' + escapeHtml(result.creatorName || 'the creator') + '</h2></div>' +
+          '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+        '<div class="modal-note"><span>i</span><p>The creator fills in their legal name, ID, address ' +
+          'and bank details themselves — nothing else in the workspace is visible to them. You get a ' +
+          'notification when they submit, and the contract can be generated straight away.</p></div>' +
+        '<label>One-time link<textarea id="creator-form-link" rows="3" readonly>' +
+          escapeHtml(result.url) + '</textarea>' +
+          '<span class="admin-hint">Valid until ' +
+            escapeHtml(workspaceDateTimeClient(result.expiresAt) || '') +
+            '. Issuing a new link invalidates this one.</span></label>' +
+        '<div class="modal-actions">' +
+          '<button type="button" class="ghost-button" data-close-modal>Close</button>' +
+          '<button type="button" class="primary-button" data-action="contract-copy-link">Select link</button>' +
+        '</div>' +
+      '</div>'
+    );
+  } catch (error) {
+    closeModal();
+    showToast(error.message, true);
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * Settings — per-market contract configuration + legacy import
+ * -------------------------------------------------------------------------- */
+
+renderSettings = async function () {
+  await renderSettingsV1110Contract();
+  if (state.view !== 'settings' || !contractIsAdmin()) return;
+
+  const grid = document.querySelector('.settings-grid');
+  if (!grid) return;
+  const holder = document.createElement('article');
+  holder.className = 'card settings-panel';
+  holder.id = 'contract-settings-panel';
+  holder.innerHTML = '<p class="eyebrow">Contract templates</p><h2>Per-market setup</h2>' +
+    '<div class="skeleton"></div>';
+  grid.appendChild(holder);
+
+  try {
+    if (!state.contractHub.data) state.contractHub.data = await server('getContractHubData', {});
+    const markets = (state.contractHub.data || {}).markets || {};
+    const target = document.getElementById('contract-settings-panel');
+    if (!target) return;
+    target.innerHTML = '<p class="eyebrow">Contract templates</p><h2>Per-market setup</h2>' +
+      '<p class="admin-hint">Contracts and acceptance certificates are issued for <strong>VN ' +
+        'campaigns only</strong> — TH and TW do not use them, and the server refuses to generate ' +
+        'for those markets. Template and folder IDs live in the CONFIG sheet; VN falls back to the ' +
+        'original built-in IDs until you override them here. Tax is fixed in code, not here.</p>' +
+      Object.keys(markets).map(function (market) {
+        const item = markets[market];
+        return '<div class="settings-row"><div><strong>' + escapeHtml(market) + ' contract</strong>' +
+          // 'tax 10%' đọc từ settings.TAX_RATE thì gợi ý rằng nó cấu hình được — mà nó
+          // không. Nói rõ là cố định.
+          '<small>' + escapeHtml((item.prefix || '—') + ' · ' + (item.currency || '') +
+            ' · tax 10% (fixed)') + '</small></div>' +
+          '<div class="settings-row-actions">' +
+            (item.configured
+              ? '<span class="status status-mint">Contract</span>'
+              : '<span class="status status-neutral">No template</span>') +
+            (item.acceptanceConfigured
+              ? '<span class="status status-mint">BBNT</span>'
+              : '<span class="status status-neutral">No BBNT</span>') +
+            '<button class="mini-edit-button" data-action="contract-edit-settings" data-market="' +
+              escapeAttr(market) + '">Edit</button>' +
+          '</div></div>';
+      }).join('') +
+      '<div class="admin-panel-foot"><button class="ghost-button" data-action="contract-migrate">' +
+        '⇩ Import legacy [SNOWVN] contracts</button></div>';
+  } catch (error) {
+    const target = document.getElementById('contract-settings-panel');
+    if (target) {
+      target.innerHTML = '<p class="eyebrow">Contract templates</p><h2>Per-market setup</h2>' +
+        '<p class="admin-error">' + escapeHtml(error.message) + '</p>';
+    }
+  }
+};
+
+function openContractSettingsModal(market) {
+  const item = ((state.contractHub.data || {}).markets || {})[market] || {};
+  openModal(
+    '<form id="contract-settings-form" class="modal-card workspace-modal" data-market="' +
+      escapeAttr(market) + '">' +
+      '<div class="modal-heading"><div><p class="eyebrow">Contract templates</p>' +
+        '<h2>' + escapeHtml(market) + ' contract setup</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<div class="modal-note"><span>i</span><p>Paste Google <strong>file IDs</strong>, not full URLs — ' +
+        'the long string between <code>/d/</code> and <code>/edit</code>. The folder ID is the string ' +
+        'after <code>/folders/</code>.</p></div>' +
+      '<label>Contract template (Google Docs file ID)' +
+        '<input name="TEMPLATE_ID" placeholder="1tnQnTSlNsEp_…"></label>' +
+      '<label>Acceptance / BBNT template (Google Docs file ID)' +
+        '<input name="ACCEPTANCE_TEMPLATE_ID" placeholder="1m1VVgClhC5ua…"></label>' +
+      '<label>Output folder ID<input name="FOLDER_ID" placeholder="1qAZ_K84vvn6…"></label>' +
+      '<div class="form-grid">' +
+        '<label>Contract number prefix<input name="PREFIX" value="' +
+          escapeAttr(item.prefix || '') + '" placeholder="HĐ-SNOWVN-"></label>' +
+        '<label>Acceptance prefix<input name="ACCEPTANCE_PREFIX" placeholder="BBNT-SNOWVN-"></label>' +
+      '</div>' +
+      // Thuế VN KHÔNG còn cấu hình được (F06b). Trước đây hai ô này sửa được nhưng
+      // KHÔNG có tác dụng gì: calculateContractTax_ dùng hằng số trong source. Để một
+      // ô nhập vô tác dụng còn tệ hơn không có — người dùng đổi tỷ lệ, thấy cột Gross
+      // không nhúc nhích, rồi kết luận app hỏng. Giờ chỉ hiển thị quy tắc thật.
+      '<div class="modal-note"><span>i</span><p>Personal income tax is fixed in code and ' +
+        '<strong>not configurable</strong>: <strong>10%</strong> gross-up, applied when the ' +
+        'taxable amount (net + code ad fee) reaches <strong>5,000,000 VND</strong>. ' +
+        'Changing it means changing <code>calculateContractTax_</code> in Code.gs plus its ' +
+        'client copy and its tests together.</p></div>' +
+      '<div class="form-grid">' +
+        '<label>Template name<input name="TEMPLATE_NAME" value="' +
+          escapeAttr(item.templateName || '') + '"></label>' +
+        '<label>Amount-in-words language<select name="LANGUAGE">' +
+          optionList(['vi', 'en'], market === 'VN' ? 'vi' : 'en') + '</select></label>' +
+      '</div>' +
+      '<p class="admin-hint">Blank fields are left unchanged, so you can fill in one ID at a time.</p>' +
+      '<p class="admin-error is-hidden" id="contract-settings-error"></p>' +
+      workspaceModalActions('Save ' + market + ' setup') +
+    '</form>'
+  );
+}
+
+function openMigrateModal() {
+  openModal(
+    '<form id="contract-migrate-form" class="modal-card workspace-modal">' +
+      '<div class="modal-heading"><div><p class="eyebrow">One-time migration</p>' +
+        '<h2>Import legacy contracts</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<div class="modal-note"><span>i</span><p>Copies the legacy <strong>[SNOWVN] Contract</strong> ' +
+        'sheet into this workspace’s CONTRACTS registry, matching rows to campaign KOLs by ID number, ' +
+        'profile link or username. Unmatched rows are still imported with a note so the history stays ' +
+        'complete. Contracts already in the registry are skipped, so re-running is safe.</p></div>' +
+      '<label>Legacy spreadsheet ID<input name="spreadsheetId" ' +
+        'placeholder="leave blank to use the configured default"></label>' +
+      '<label>Sheet name<input name="sheetName" value="Contract"></label>' +
+      '<div id="migrate-report"></div>' +
+      '<p class="admin-error is-hidden" id="migrate-error"></p>' +
+      '<div class="modal-actions">' +
+        '<button type="button" class="ghost-button" data-close-modal>Cancel</button>' +
+        '<button type="button" class="ghost-button" data-action="contract-migrate-preview">Preview</button>' +
+        '<button type="submit" class="primary-button">Import</button>' +
+      '</div>' +
+    '</form>'
+  );
+}
+
+/* ----------------------------------------------------------------------------
+ * Actions
+ * -------------------------------------------------------------------------- */
+
+async function runPrepareAcceptance(form) {
+  const values = formToObject(form);
+  setFormBusy(form, true);
+  try {
+    await server('prepareAcceptance', {
+      Contract_ID: form.dataset.id,
+      Image_Usage_Fee: values.Image_Usage_Fee,
+      Notes: values.Notes,
+    });
+    closeModal();
+    state.contractHub.data = null;
+    await renderOperations('contracts');
+    showToast('Acceptance lines created — attach an evidence screenshot per line.');
+  } catch (error) {
+    contractShowError('acceptance-prepare-error', error.message);
+    setFormBusy(form, false);
+  }
+}
+
+async function runSaveAcceptanceLine(form) {
+  const values = formToObject(form);
+  const button = form.querySelector('button[type="submit"]');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Saving…';
+  }
+  try {
+    await server('saveAcceptanceLine', {
+      Acceptance_Line_ID: form.dataset.id,
+      Evidence_URLs: values.Evidence_URLs || '',
+    });
+    const acceptanceId = contractCurrentAcceptanceId();
+    state.contractHub.data = await server('getContractHubData', {});
+    if (acceptanceId) openAcceptanceDetailModal(acceptanceId);
+    showToast('Line saved.');
+  } catch (error) {
+    contractShowError('acceptance-detail-error', error.message);
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Save line';
+    }
+  }
+}
+
+function contractCurrentAcceptanceId() {
+  const node = modalRoot.querySelector('[data-action="contract-generate-acceptance"]');
+  return node ? node.dataset.id : '';
+}
+
+async function runGenerateAcceptance(button) {
+  button.disabled = true;
+  button.textContent = 'Generating…';
+  try {
+    const result = await server('generateAcceptance', { Acceptance_ID: button.dataset.id });
+    closeModal();
+    state.contractHub.data = null;
+    await renderOperations('contracts');
+    showToast('Acceptance ' + result.Acceptance_No + ' generated.');
+  } catch (error) {
+    contractShowError('acceptance-detail-error', error.message);
+    button.disabled = false;
+    button.textContent = 'Generate BBNT document';
+  }
+}
+
+async function runSetContractStatus(button) {
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  try {
+    const result = await server('setContractSignStatus', {
+      Contract_ID: button.dataset.id,
+      Sign_Status: button.dataset.status,
+    });
+    // Both caches feed this screen; leaving contractData stale is what used to
+    // hide a fresh contract's Prepare BBNT button until a full reload.
+    state.contractHub.data = null;
+    state.operations.contractData = null;
+    state.operations.contracts = null;
+    await renderOperations('contracts');
+    showToast('Contract marked ' + result.Sign_Status + '.');
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = previous;
+    showToast(error.message);
+  }
+}
+
+async function runSetAcceptanceStatus(button) {
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  try {
+    await server('setAcceptanceStatus', {
+      Acceptance_ID: button.dataset.id,
+      Status: button.dataset.status,
+    });
+    state.contractHub.data = null;
+    state.operations.contractData = null;
+    state.operations.contracts = null;
+    await renderOperations('contracts');
+    showToast('BBNT marked signed.');
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = previous;
+    showToast(error.message);
+  }
+}
+
+async function runSaveContractSettings(form) {
+  const values = formToObject(form);
+  const payload = { Market: form.dataset.market };
+  Object.keys(values).forEach(function (key) {
+    if (String(values[key]).trim() !== '') payload[key] = values[key];
+  });
+  setFormBusy(form, true);
+  try {
+    await server('saveContractSettings', payload);
+    closeModal();
+    state.contractHub.data = null;
+    state.operations.settings = null;
+    await renderSettings();
+    showToast(payload.Market + ' contract setup saved.');
+  } catch (error) {
+    contractShowError('contract-settings-error', error.message);
+    setFormBusy(form, false);
+  }
+}
+
+async function runMigrate(form, dryRun) {
+  const values = formToObject(form);
+  const payload = {
+    spreadsheetId: values.spreadsheetId || '',
+    sheetName: values.sheetName || 'Contract',
+  };
+  if (dryRun) payload.dryRun = 'TRUE';
+
+  const report = document.getElementById('migrate-report');
+  if (!dryRun) setFormBusy(form, true);
+  if (report) report.innerHTML = '<div class="skeleton"></div>';
+
+  try {
+    const result = await server('migrateLegacyContracts', payload);
+    if (report) {
+      report.innerHTML = '<ul class="danger-list">' +
+        '<li>Rows read: <strong>' + result.total + '</strong></li>' +
+        '<li>' + (dryRun ? 'Would import' : 'Imported') + ': <strong>' + result.imported + '</strong></li>' +
+        '<li>Skipped (already in registry): <strong>' + result.skipped + '</strong></li>' +
+        '<li>Matched to a campaign KOL: <strong>' + result.matched + '</strong></li>' +
+        '<li>Unmatched — link manually: <strong>' + result.unmatched + '</strong></li>' +
+      '</ul>';
+    }
+    if (!dryRun) {
+      state.contractHub.data = null;
+      state.operations.contracts = null;
+      showToast(result.imported + ' legacy contract(s) imported.');
+    }
+  } catch (error) {
+    if (report) report.innerHTML = '';
+    contractShowError('migrate-error', error.message);
+  } finally {
+    if (!dryRun) setFormBusy(form, false);
+  }
+}
+
+function contractShowError(nodeId, message) {
+  const node = document.getElementById(nodeId);
+  if (!node) return showToast(message, true);
+  node.textContent = message;
+  node.classList.remove('is-hidden');
+  return null;
+}
+
+/* ----------------------------------------------------------------------------
+ * Wiring
+ * -------------------------------------------------------------------------- */
+
+handleMainClick = function (event) {
+  const node = event.target.closest('[data-action]');
+  if (!node) return handleMainClickV1110Contract(event);
+  const action = node.dataset.action;
+
+  if (action === 'contract-prepare-acceptance') return openPrepareAcceptanceModal(node.dataset.id);
+  if (action === 'contract-acceptance-detail') return openAcceptanceDetailModal(node.dataset.id);
+  if (action === 'contract-send-form') return openCreatorFormLinkModal(node.dataset.id);
+  if (action === 'contract-edit-settings') return openContractSettingsModal(node.dataset.market);
+  if (action === 'contract-migrate') return openMigrateModal();
+  if (action === 'contract-set-status') return runSetContractStatus(node);
+  if (action === 'acceptance-set-status') return runSetAcceptanceStatus(node);
+
+  return handleMainClickV1110Contract(event);
+};
+
+modalRoot.addEventListener('click', function (event) {
+  const node = event.target.closest('[data-action]');
+  if (!node) return;
+  const action = node.dataset.action;
+
+  if (action === 'contract-generate-acceptance') return runGenerateAcceptance(node);
+  if (action === 'contract-migrate-preview') {
+    const form = document.getElementById('contract-migrate-form');
+    if (form) runMigrate(form, true);
+    return;
+  }
+  if (action === 'contract-copy-link') {
+    const input = document.getElementById('creator-form-link');
+    if (input) {
+      input.select();
+      try {
+        document.execCommand('copy');
+        showToast('Link copied.');
+      } catch (error) {
+        showToast('Press ⌘C / Ctrl+C to copy the selected link.');
+      }
+    }
+    return;
+  }
+});
+
+handleModalSubmit = async function (event) {
+  const form = event.target;
+
+  if (form.classList && form.classList.contains('acceptance-line-form')) {
+    event.preventDefault();
+    return runSaveAcceptanceLine(form);
+  }
+  const localForms = ['acceptance-prepare-form', 'contract-settings-form', 'contract-migrate-form'];
+  if (localForms.indexOf(form.id) === -1) return handleModalSubmitV1110Contract(event);
+  event.preventDefault();
+
+  if (form.id === 'acceptance-prepare-form') return runPrepareAcceptance(form);
+  if (form.id === 'contract-settings-form') return runSaveContractSettings(form);
+  return runMigrate(form, false);
+};
+</script>

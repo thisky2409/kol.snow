@@ -1,0 +1,1272 @@
+<script>
+'use strict';
+/* v1.5.0 performance and experience layer. Loaded after CampaignWorkspace. */
+Object.assign(state.db, {
+viewTab: 'all',
+platforms: [],
+category: '',
+language: '',
+contactChannel: 'All',
+hasContact: 'All',
+minFollowers: '',
+maxFollowers: '',
+minFee: '',
+maxFee: '',
+minEngagement: '',
+filtersOpen: false,
+pageSize: 40,
+sorts: [
+{ field: 'Starting_Fee', order: 'asc' },
+{ field: 'Followers', order: 'desc' },
+{ field: 'Engagement_Rate', order: 'desc' },
+],
+cache: new Map(),
+});
+state.calendar = { year: new Date().getFullYear(), month: new Date().getMonth() + 1, data: null, loading: false, expandedDays: new Set() };
+state.shortlistReturnId = '';
+state.preferredShortlistId = '';
+const handleMainClickV140 = handleMainClick;
+const handleMainInputV140 = handleMainInput;
+const handleMainChangeV140 = handleMainChange;
+const handleModalSubmitV140 = handleModalSubmit;
+const openModalV140 = openModal;
+const formToObjectV140 = formToObject;
+/**
+ * One ladder, one vocabulary. statusTone in Scripts.html is the single source of
+ * truth — it already drives every inline status select — and this only maps its
+ * tone onto the badge palette, whose colours are near-identical anyway.
+ *
+ * This function used to carry a second, competing ladder, and the two disagreed
+ * on 12 of the 30 status values actually in use. The worst two: "Not contacted"
+ * rendered blue as though it had been contacted, and "Need edit" rendered grey,
+ * indistinguishable from "Not started" for Marketing.
+ */
+const BADGE_TONE_CLASSES = {
+mint: 'success', blue: 'info', amber: 'warning',
+danger: 'danger', violet: 'violet', neutral: 'neutral',
+};
+statusBadge = function (value) {
+const text = String(value || 'Not started');
+const tone = BADGE_TONE_CLASSES[statusTone(text)] || 'neutral';
+return '<span class="status status-' + tone + '"><i></i>' + escapeHtml(text) + '</span>';
+};
+formatNumber = function (value) {
+const number = Number(stripNumberFormatting(value)) || 0;
+return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(number);
+};
+compactNumber = function (value) {
+const number = Number(stripNumberFormatting(value)) || 0;
+return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(number);
+};
+const PLATFORM_ICONS = {
+tiktok: '<svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M16.6 5.82s.51.5 0 0A4.278 4.278 0 0 1 15.54 3h-3.09v12.4a2.592 2.592 0 0 1-2.59 2.5c-1.42 0-2.6-1.16-2.6-2.6 0-1.72 1.66-3.01 3.37-2.48V9.66c-3.45-.46-6.47 2.22-6.47 5.64 0 3.33 2.76 5.7 5.69 5.7 3.14 0 5.69-2.55 5.69-5.7V9.01a7.35 7.35 0 0 0 4.3 1.38V7.3s-1.88.09-3.24-1.48z"/></svg>',
+instagram: '<svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r="0.6" fill="currentColor" stroke="none"/></svg>',
+threads: '<svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12.186 24h-.007c-3.581-.024-6.334-1.205-8.184-3.509C2.35 18.44 1.5 15.586 1.472 12.01v-.017c.03-3.579.879-6.43 2.525-8.482C5.845 1.205 8.6.024 12.18 0h.014c2.746.02 5.043.725 6.826 2.098 1.677 1.29 2.858 3.13 3.509 5.467l-2.04.569c-1.104-3.96-3.898-5.984-8.304-6.015-2.91.022-5.11.936-6.54 2.717C4.307 6.504 3.616 8.914 3.589 12c.027 3.086.718 5.496 2.057 7.164 1.43 1.781 3.631 2.695 6.54 2.717 2.623-.02 4.358-.631 5.8-2.045 1.647-1.613 1.618-3.593 1.09-4.798-.31-.71-.873-1.3-1.634-1.75-.192 1.352-.622 2.446-1.284 3.272-.886 1.102-2.14 1.704-3.73 1.79-1.202.065-2.361-.218-3.259-.801-1.062-.689-1.685-1.74-1.752-2.962-.065-1.19.408-2.285 1.33-3.082.88-.76 2.119-1.207 3.583-1.291a13.853 13.853 0 0 1 3.02.142c-.126-.742-.39-1.331-.789-1.757-.542-.58-1.395-.876-2.539-.878h-.021c-.939 0-2.174.257-2.965 1.475L7.75 8.14c1.061-1.626 2.68-2.512 4.671-2.512h.021c3.345.02 5.362 2.05 5.579 5.576.126.033.25.067.371.104 1.663.51 2.874 1.416 3.503 2.62.877 1.68 1.083 4.397-1.226 6.677-1.68 1.66-3.807 2.44-7.483 2.395z"/></svg>',
+x: '<svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M4 4l7 8.4L4.4 20H7l5-5.6 4.2 5.6H20l-7.4-8.8L19.4 4H17l-4.6 5.2L8.6 4H4z"/></svg>',
+youtube: '<svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="4" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="currentColor" d="M10 8.5v7l6-3.5z"/></svg>',
+facebook: '<svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M14 21v-7h2.3l.35-2.7H14V9.4c0-.8.2-1.35 1.37-1.35H16.8V5.6C16.5 5.56 15.6 5.5 14.5 5.5c-2.3 0-3.9 1.4-3.9 4V11.3H8.3V14h2.3v7h3.4z"/></svg>',
+other: '<svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/></svg>',
+};
+function platformBadge(platform) {
+const name = String(platform || 'Other');
+const key = name.toLowerCase().replace(/[^a-z]/g, '');
+const icon = PLATFORM_ICONS[key] || PLATFORM_ICONS.other;
+return '<span class="platform-badge platform-' + escapeAttr(key || 'other') + '"><i>' + icon + '</i>' + escapeHtml(name) + '</span>';
+}
+function appColor(app) {
+const colors = { SNOW: '#19bfe5', B612: '#5db9bb', FOODIE: '#f2c500', SODA: '#76c8ee', EPIK: '#17191f', 'LINE CAMERA': '#795548' };
+return colors[String(app || '').toUpperCase()] || '#6878d8';
+}
+function appTextColor(app) {
+const darkTextApps = ['SNOW', 'FOODIE', 'SODA'];
+return darkTextApps.indexOf(String(app || '').toUpperCase()) >= 0 ? '#173445' : '#ffffff';
+}
+openModal = function (content) {
+openModalV140(content);
+requestAnimationFrame(enhanceNumericInputs);
+};
+formToObject = function (form) {
+const payload = formToObjectV140(form);
+form.querySelectorAll('[data-numeric-input]').forEach(function (input) {
+if (input.name) payload[input.name] = stripNumberFormatting(input.value);
+});
+return payload;
+};
+function enhanceNumericInputs() {
+modalRoot.querySelectorAll('input[type="number"]').forEach(function (input) {
+input.type = 'text';
+input.inputMode = 'decimal';
+input.dataset.numericInput = 'true';
+input.value = formatInputNumber(input.value);
+});
+}
+function stripNumberFormatting(value) {
+return String(value == null ? '' : value).replace(/,/g, '').replace(/[^0-9.-]/g, '');
+}
+function formatInputNumber(value) {
+const raw = stripNumberFormatting(value);
+if (!raw || raw === '-' || raw === '.') return raw;
+const parts = raw.split('.');
+const integer = Number(parts[0] || 0).toLocaleString('en-US');
+return parts.length > 1 ? integer + '.' + parts.slice(1).join('').slice(0, 4) : integer;
+}
+// Bug đã sửa: trước đây mỗi lần gõ, ô input được format lại (thêm dấu phẩy)
+// nhưng con trỏ luôn bị đẩy về cuối chuỗi thay vì giữ đúng vị trí đang gõ/xoá.
+// Ví dụ: gõ "100000" giữa chừng sửa lại 1 số, hoặc bấm xoá (backspace) ở giữa
+// chuỗi — vì con trỏ bị "nhảy" sai chỗ nên ký tự tiếp theo bị chèn/xoá nhầm vị
+// trí, gây ra hiện tượng nhập 100,000 lại ra 110,000, hoặc xoá số lại sinh
+// thêm số 1. Hàm dưới đây định dạng lại giá trị NHƯNG tính toán đúng vị trí
+// con trỏ mới dựa trên số ký tự "thật" (số, dấu chấm, dấu trừ — không tính
+// dấu phẩy) nằm trước con trỏ cũ.
+function formatNumericInputPreservingCaret_(input) {
+const before = input.value;
+const caretPos = input.selectionStart == null ? before.length : input.selectionStart;
+const anchorsBeforeCaret = before.slice(0, caretPos).replace(/,/g, '').length;
+input.value = formatInputNumber(before);
+const formatted = input.value;
+let pos = 0;
+let seen = 0;
+while (pos < formatted.length && seen < anchorsBeforeCaret) {
+if (formatted[pos] !== ',') seen += 1;
+pos += 1;
+}
+try { input.setSelectionRange(pos, pos); } catch (_) {}
+}
+modalRoot.addEventListener('input', function (event) {
+const input = event.target.closest('[data-numeric-input]');
+if (!input) return;
+// Bàn phím di động có gõ dự đoán/tiếng Việt (IME) gửi các sự kiện 'input' liên
+// tục trong lúc đang "compose" (chưa chốt ký tự cuối). Nếu mình format lại giá
+// trị NGAY LÚC ĐÓ, con trỏ mà bàn phím đang tự theo dõi sẽ bị lệch — đây chính
+// là nguyên nhân gây nhảy số khi gõ trên điện thoại. Chờ đến khi gõ xong
+// (compositionend) mới format lại.
+if (event.isComposing) return;
+formatNumericInputPreservingCaret_(input);
+if (typeof updateFeeTotalPreview === 'function') updateFeeTotalPreview();
+});
+modalRoot.addEventListener('compositionend', function (event) {
+const input = event.target.closest('[data-numeric-input]');
+if (!input) return;
+formatNumericInputPreservingCaret_(input);
+if (typeof updateFeeTotalPreview === 'function') updateFeeTotalPreview();
+});
+renderDatabase = function () {
+const canImport = ['Admin', 'Booking'].includes(state.user.Role);
+const canManage = ['Admin', 'Booking'].includes(state.user.Role);
+const isMarketing = state.user.Role === 'Marketing';
+if (isMarketing) state.db.viewTab = 'picks';
+const isPicksTab = state.db.viewTab === 'picks';
+if (isPicksTab) state.db.status = 'Deal';
+const activeFilters = databaseFilterCount();
+main.innerHTML = pageHeading('Creator intelligence', isPicksTab ? 'Campaign Picks' : 'KOL Database', isPicksTab ? 'Pick creators for a campaign. Only accounts with a fee above 0 are shown.' : 'Add and maintain creator records, contact info and rates.',
+(!isPicksTab && canImport ? '<button class="ghost-button" data-action="import-kols">⇧ Import KOLs</button>' : '') +
+(!isPicksTab && canManage ? '<button class="primary-button" data-action="add-kol-direct">＋ Add KOL</button>' : '')) +
+(isMarketing ? '' : '<div class="segmented database-view-tabs">' +
+'<button class="' + (isPicksTab ? '' : 'active') + '" data-action="db-view-tab" data-tab="all">Database</button>' +
+'<button class="' + (isPicksTab ? 'active' : '') + '" data-action="db-view-tab" data-tab="picks">Campaign Picks</button>' +
+'</div>') +
+'<section class="database-control card"><div class="database-control-main"><div class="toolbar-search"><span>⌕</span><input id="db-query" value="' + escapeAttr(state.db.query) + '" placeholder="Search creator, username, category…"></div>' +
+'<button class="filter-toggle' + (activeFilters ? ' has-filter' : '') + '" data-action="toggle-db-filters">⚙ Filters' + (activeFilters ? '<b>' + activeFilters + '</b>' : '') + '</button></div>' +
+'<div class="segmented database-markets">' + ['All', 'VN', 'TH', 'TW'].map(function (market) {
+return '<button class="' + (state.db.market === market ? 'active' : '') + '" data-action="market-filter" data-market="' + market + '">' + (market === 'All' ? 'All markets' : market) + '</button>';
+}).join('') + '</div>' +
+(state.db.filtersOpen ? renderAdvancedDatabaseFilters() : '') + '</section>' +
+'<div id="database-results">' + (state.db.rows.length ? '' : databaseLoading()) + '</div>';
+if (state.db.rows.length) renderDatabaseResults();
+loadAccounts();
+};
+function renderAdvancedDatabaseFilters() {
+const isPicksTab = state.db.viewTab === 'picks';
+const categoryPicks = state.config.categories || [];
+const rangePicks = state.config.followerRanges || [];
+const platformPicks = state.config.platforms || [];
+const selectedPlatforms = state.db.platforms || [];
+const selectedCategories = state.db.categories || [];
+const selectedRanges = state.db.followerRanges || [];
+const statusFilter = isPicksTab || state.user.Role === 'Marketing' ? '' :
+filterSelect('db-filter-status', 'Status', ['Not contacted','Pending','Contacted','Deal','No Response',"Can\'t contact",'Decline','Black List'], state.db.status);
+const platformFilter = '<div class="chip-field filter-platform-field"><span class="filter-field-label">Platform</span>' + dropdownChipField('db-filter-platform', selectedPlatforms.length ? (selectedPlatforms.length + ' selected') : 'All', platformPicks.map(function (item) {
+return { value: item, label: item, checked: selectedPlatforms.indexOf(item) >= 0, extraClass: 'platform-choice-' + String(item).toLowerCase().replace(/[^a-z]/g, '') };
+}), 0) + '</div>';
+const feeRange = '<div class="filter-range-field"><span>Fee range</span><div><input id="db-filter-fee-min" inputmode="numeric" value="' + escapeAttr(formatInputNumber(state.db.minFee)) + '" placeholder="From"><i>–</i><input id="db-filter-fee-max" inputmode="numeric" value="' + escapeAttr(formatInputNumber(state.db.maxFee)) + '" placeholder="To"></div></div>';
+const sharedPrimary = platformFilter +
+filterSelect('db-filter-app', 'App fit', state.config.apps || [], state.db.app) +
+feeRange +
+'<label>Min. engagement %<input id="db-filter-engagement-min" inputmode="decimal" value="' + escapeAttr(formatInputNumber(state.db.minEngagement)) + '" placeholder="0"></label>';
+const databaseOnly = isPicksTab ? '' :
+filterSelect('db-filter-contact-channel', 'Contact channel', ['Email','Phone','LINE'], state.db.contactChannel) +
+filterSelect('db-filter-has-contact', 'Contact available', ['Yes','No'], state.db.hasContact) +
+statusFilter;
+return '<div class="advanced-filter-panel"><div class="filter-grid' + (isPicksTab ? ' filter-grid-picks' : ' filter-grid-database') + '">' +
+sharedPrimary +
+databaseOnly +
+'<div class="chip-field">' + dropdownChipField('db-filter-category', 'Category', categoryPicks.map(function (cat) {
+return { value: cat, label: cat, checked: selectedCategories.indexOf(cat) >= 0, extraClass: 'cat-' + categoryTone(cat) };
+}), selectedCategories.length) + '</div>' +
+'<div class="chip-field">' + dropdownChipField('db-filter-followers', 'Followers', rangePicks.map(function (range) {
+return { value: range.id, label: range.label, checked: selectedRanges.indexOf(range.id) >= 0, extraClass: 'range-' + range.id };
+}), selectedRanges.length) + '</div>' +
+'</div><div class="filter-actions"><button class="ghost-button" data-action="clear-db-filters">Clear filters</button><button class="primary-button" data-action="apply-db-filters">Apply filters</button></div></div>';
+}
+function dropdownChipField(groupId, label, options, selectedCount) {
+const summary = selectedCount ? (label + ' (' + selectedCount + ')') : label;
+return '<details class="dropdown-field"><summary>' + escapeHtml(summary) + '</summary><div class="dropdown-panel" data-chip-group="' + escapeAttr(groupId) + '">' +
+options.map(function (opt) {
+return '<label class="chip-choice' + (opt.extraClass ? ' ' + opt.extraClass : '') + '"><input type="checkbox" value="' + escapeAttr(opt.value) + '"' + (opt.checked ? ' checked' : '') + '><span>' + escapeHtml(opt.label) + '</span></label>';
+}).join('') + '</div></details>';
+}
+function filterSelect(id, label, items, selected) {
+return '<label>' + escapeHtml(label) + '<select id="' + id + '"><option value="All">All</option>' + (items || []).map(function (item) {
+return '<option' + (String(item) === String(selected) ? ' selected' : '') + '>' + escapeHtml(item) + '</option>';
+}).join('') + '</select></label>';
+}
+function databaseFilterCount() {
+const isPicksTab = state.db.viewTab === 'picks';
+const simpleKeys = ['app','minFee','maxFee','minEngagement'];
+if (!isPicksTab) simpleKeys.push('contactChannel','hasContact','status');
+const simple = simpleKeys.filter(function (key) {
+const value = state.db[key];
+return value !== '' && value !== 'All' && value !== null && value !== undefined;
+}).length;
+const hasPlatforms = (state.db.platforms || []).length ? 1 : 0;
+const hasCategories = (state.db.categories || []).length ? 1 : 0;
+const hasRanges = (state.db.followerRanges || []).length ? 1 : 0;
+return simple + hasPlatforms + hasCategories + hasRanges;
+}
+function collectDatabaseFilters() {
+const isPicksTab = state.db.viewTab === 'picks';
+const values = {
+platform: 'All', platforms: checkedValues('db-filter-platform'), app: valueOf('db-filter-app', 'All'), status: isPicksTab || state.user.Role === 'Marketing' ? 'Deal' : valueOf('db-filter-status', 'All'),
+contactChannel: isPicksTab ? 'All' : valueOf('db-filter-contact-channel', 'All'),
+hasContact: valueOf('db-filter-has-contact', 'All'), minFee: stripNumberFormatting(valueOf('db-filter-fee-min', '')),
+maxFee: stripNumberFormatting(valueOf('db-filter-fee-max', '')), minEngagement: stripNumberFormatting(valueOf('db-filter-engagement-min', '')),
+categories: checkedValues('db-filter-category'), followerRanges: checkedValues('db-filter-followers'),
+};
+Object.assign(state.db, values);
+state.db.offset = 0;
+}
+function checkedValues(chipGroup) {
+const container = document.querySelector('[data-chip-group="' + chipGroup + '"]');
+if (!container) return [];
+return Array.prototype.slice.call(container.querySelectorAll('input:checked')).map(function (input) { return input.value; });
+}
+function valueOf(id, fallback) {
+const node = document.getElementById(id);
+return node ? node.value.trim() : fallback;
+}
+loadAccounts = async function (force) {
+const token = ++state.requestToken;
+const params = databaseRequestParams();
+const key = JSON.stringify(params);
+const cached = !force && state.db.cache.get(key);
+if (cached) {
+Object.assign(state.db, { rows: cached.rows, total: cached.total, loading: false });
+if (state.view === 'database') renderDatabaseResults();
+return;
+}
+state.db.loading = true;
+const target = document.getElementById('database-results');
+if (target && state.db.rows.length) target.classList.add('is-soft-loading');
+else if (target) target.innerHTML = databaseLoading();
+try {
+const result = await server('searchAccounts', params);
+if (token !== state.requestToken || state.view !== 'database') return;
+state.db.rows = result.rows || [];
+state.db.total = Number(result.total || 0);
+state.db.loading = false;
+state.db.cache.set(key, { rows: state.db.rows, total: state.db.total });
+while (state.db.cache.size > 20) state.db.cache.delete(state.db.cache.keys().next().value);
+renderDatabaseResults();
+} catch (error) {
+if (token !== state.requestToken) return;
+state.db.loading = false;
+if (target) {
+// is-soft-loading carries pointer-events: none, so leaving it on made the
+// Try again button below literally impossible to click.
+target.classList.remove('is-soft-loading');
+target.innerHTML = emptyState('!', 'Could not load database', error.message, '<button class="ghost-button" data-action="retry-database">Try again</button>');
+}
+}
+};
+function databaseRequestParams() {
+const isPicksTab = state.db.viewTab === 'picks';
+return {
+query: state.db.query, market: state.db.market, platform: 'All', platforms: state.db.platforms || [], app: state.db.app, status: isPicksTab ? 'Deal' : state.db.status,
+categories: state.db.categories || [], contactChannel: state.db.contactChannel, hasContact: state.db.hasContact,
+followerRanges: state.db.followerRanges || [], minFee: state.db.minFee, maxFee: state.db.maxFee,
+minEngagement: state.db.minEngagement, sorts: state.db.sorts, offset: state.db.offset, pageSize: state.db.pageSize,
+bookableOnly: isPicksTab, groupByCreator: true,
+};
+}
+renderDatabaseResults = function () {
+const target = document.getElementById('database-results');
+if (!target) return;
+// Undim before the zero-rows return below. This used to happen further down, so
+// a search with no matches left the panel greyed out and click-blocked.
+target.classList.remove('is-soft-loading');
+if (!state.db.rows.length) {
+target.innerHTML = emptyState('⌕', 'No KOL accounts found', state.db.viewTab === 'picks' ? 'No KOLs with a booking fee (fee > 0) match this filter.' : 'Try another keyword or combine fewer filters.', '');
+return;
+}
+const isPicksTab = state.db.viewTab === 'picks';
+const canPick = ['Admin', 'Booking', 'Marketing'].includes(state.user.Role);
+const visibleAccountIds = databaseVisibleAccountIds();
+const allSelected = visibleAccountIds.length && visibleAccountIds.every(function (id) { return state.selectedAccounts.has(id); });
+const headerCols = isPicksTab
+? '<th>Creator</th><th>Market</th><th>Category</th><th>Platforms</th>'
+: '<th>Creator</th><th>Market</th><th>Category</th><th>Platforms</th><th>Apps</th><th>Contact</th><th>Status</th><th>Actions</th>';
+const rowRenderer = isPicksTab ? campaignPickRow : accountRow;
+target.innerHTML = '<section class="table-card card database-table' + (isPicksTab ? ' campaign-picks-table' : ' creator-master-table') + '"><div class="table-summary"><span><strong>' + formatNumber(state.db.total) + '</strong> matching profiles' + (state.db.loading ? '<em>Updating…</em>' : '') + '</span>' + renderMultiSort() + '</div>' +
+'<div class="table-scroll"><table class="data-table"><thead><tr><th>' + (canPick ? '<input id="select-visible" type="checkbox"' + (allSelected ? ' checked' : '') + '>' : '') + '</th>' + headerCols + '</tr></thead><tbody>' + state.db.rows.map(rowRenderer).join('') + '</tbody></table></div>' +
+'<div class="pagination"><span>Showing ' + (state.db.offset + 1) + '–' + Math.min(state.db.offset + state.db.pageSize, state.db.total) + ' of ' + formatNumber(state.db.total) + '</span><div><button data-action="db-first"' + (state.db.offset === 0 ? ' disabled' : '') + '>⇤ First</button><button data-action="db-prev"' + (state.db.offset === 0 ? ' disabled' : '') + '>← Previous</button><button data-action="db-next"' + (state.db.offset + state.db.pageSize >= state.db.total ? ' disabled' : '') + '>Next →</button><button data-action="db-last"' + (state.db.offset + state.db.pageSize >= state.db.total ? ' disabled' : '') + '>Last ⇥</button></div></div></section>';
+installDatabaseStickyHeader_();
+updateSelectionBar();
+};
+let databaseStickyHeaderObserver_ = null;
+function installDatabaseStickyHeader_() {
+if (databaseStickyHeaderObserver_) {
+databaseStickyHeaderObserver_.disconnect();
+databaseStickyHeaderObserver_ = null;
+}
+const card = document.querySelector('.database-table');
+if (!card) return;
+const scroll = card.querySelector('.table-scroll');
+const sourceTable = scroll && scroll.querySelector('.data-table');
+const sourceHead = sourceTable && sourceTable.querySelector('thead');
+if (!scroll || !sourceTable || !sourceHead) return;
+
+const sticky = document.createElement('div');
+sticky.className = 'database-sticky-header';
+sticky.setAttribute('aria-hidden', 'true');
+const viewport = document.createElement('div');
+viewport.className = 'database-sticky-header-viewport';
+const cloneTable = document.createElement('table');
+cloneTable.className = 'data-table database-sticky-header-table';
+cloneTable.appendChild(sourceHead.cloneNode(true));
+cloneTable.querySelectorAll('[id]').forEach(function (node) { node.removeAttribute('id'); });
+cloneTable.querySelectorAll('input,button,a,select,textarea').forEach(function (node) {
+node.setAttribute('tabindex', '-1');
+node.setAttribute('aria-hidden', 'true');
+});
+viewport.appendChild(cloneTable);
+sticky.appendChild(viewport);
+card.insertBefore(sticky, scroll);
+
+let frame = 0;
+function syncStickyHeader_() {
+if (!sourceTable.isConnected || !sticky.isConnected) return;
+const sourceCells = sourceHead.querySelectorAll('th');
+const cloneCells = cloneTable.querySelectorAll('th');
+let measuredWidth = 0;
+sourceCells.forEach(function (cell, index) {
+const width = cell.getBoundingClientRect().width;
+measuredWidth += width;
+if (!cloneCells[index]) return;
+cloneCells[index].style.setProperty('width', width + 'px', 'important');
+cloneCells[index].style.setProperty('min-width', width + 'px', 'important');
+cloneCells[index].style.setProperty('max-width', width + 'px', 'important');
+});
+cloneTable.style.width = Math.max(sourceTable.scrollWidth, measuredWidth) + 'px';
+viewport.scrollLeft = scroll.scrollLeft;
+}
+function scheduleStickyHeaderSync_() {
+if (frame) cancelAnimationFrame(frame);
+frame = requestAnimationFrame(function () {
+frame = 0;
+syncStickyHeader_();
+});
+}
+scroll.addEventListener('scroll', scheduleStickyHeaderSync_, { passive: true });
+if (typeof ResizeObserver !== 'undefined') {
+databaseStickyHeaderObserver_ = new ResizeObserver(scheduleStickyHeaderSync_);
+databaseStickyHeaderObserver_.observe(sourceTable);
+}
+scheduleStickyHeaderSync_();
+}
+function databaseVisibleAccountIds() {
+const ids = [];
+(state.db.rows || []).forEach(function (row) {
+platformEntriesForRow(row).forEach(function (platform) {
+if (platform.Account_ID && ids.indexOf(platform.Account_ID) === -1) ids.push(platform.Account_ID);
+});
+});
+return ids;
+}
+function platformEntriesForRow(row) {
+return Array.isArray(row.Platforms_List) && row.Platforms_List.length
+? row.Platforms_List
+: [{
+Account_ID: row.Account_ID,
+Platform: row.Platform,
+Username: row.Username,
+Profile_URL: row.Profile_URL,
+Followers: row.Followers,
+Avg_Views: row.Avg_Views,
+Engagement_Rate: row.Engagement_Rate,
+Starting_Fee: row.Starting_Fee,
+Currency: row.Currency,
+App_Fit: row.App_Fit,
+Contact_Channel: row.Contact_Channel,
+Contact_Value: row.Contact_Value,
+}];
+}
+function creatorSelectionCheckbox(platforms) {
+const ids = platforms.map(function (platform) { return platform.Account_ID; }).filter(Boolean);
+const checked = ids.length && ids.every(function (id) { return state.selectedAccounts.has(id); });
+return '<input type="checkbox" data-creator-account-checkbox="' + escapeAttr(ids.join(',')) + '"' + (checked ? ' checked' : '') + ' aria-label="Select all platforms for this creator">';
+}
+function creatorAddedMeta(row) {
+const added = safeDate(row.Date_Added || row.Created_At);
+if (!added) return '';
+const ageDays = Math.max(0, Math.floor((Date.now() - added.getTime()) / 86400000));
+const label = new Intl.DateTimeFormat('en-US', { day: '2-digit', month: 'short', year: 'numeric' }).format(added);
+return '<span class="creator-added-meta">' + (ageDays <= 7 ? '<b>New</b>' : '') + '<small>Added ' + escapeHtml(label) + '</small></span>';
+}
+function campaignPickRow(row) {
+const canPick = ['Admin', 'Booking', 'Marketing'].includes(state.user.Role);
+const selectedPlatforms = state.db.platforms || [];
+const platforms = platformEntriesForRow(row).filter(function (platform) {
+return !selectedPlatforms.length || selectedPlatforms.indexOf(platform.Platform) >= 0;
+});
+const selected = platforms.some(function (platform) { return state.selectedAccounts.has(platform.Account_ID); });
+const platformChips = platforms.map(function (platform) { return renderCreatorPlatformCard(platform, false, canPick); }).join('');
+return '<tr class="' + (selected ? 'row-selected' : '') + '"><td>' + (canPick ? creatorSelectionCheckbox(platforms) : '') + '</td>' +
+'<td><div class="creator-cell">' + avatar(row.Display_Name || row.Username, row.Market) + '<div><strong>' + escapeHtml(row.Display_Name || row.Username || 'Unnamed') + '</strong><small>@' + escapeHtml(row.Username || '—') + '</small>' + creatorAddedMeta(row) + '</div></div></td><td>' + marketBadge(row.Market) + '</td>' +
+'<td>' + compactTagSummary(row.Categories, 'category') + '</td>' +
+'<td><div class="pick-platform-list">' + (platformChips || '<span class="cell-sub">—</span>') + '</div></td>' +
+'</tr>';
+};
+function renderMultiSort() {
+const fields = [['Date_Added','Date added'],['Followers','Followers'],['Starting_Fee','Price'],['Engagement_Rate','Engagement'],['Avg_Views','Avg. views'],['Username','Username'],['Display_Name','Creator name'],['Last_Verified','Last verified']];
+return '<div class="multi-sort"><span>Sort priority</span>' + state.db.sorts.map(function (sort, index) {
+const dateSort = sort.field === 'Date_Added' || sort.field === 'Last_Verified';
+const descLabel = dateSort ? 'Newest → Oldest' : 'High → Low';
+const ascLabel = dateSort ? 'Oldest → Newest' : 'Low → High';
+return '<label><b>' + (index + 1) + '</b><select id="db-sort-field-' + index + '">' + fields.map(function (field) { return '<option value="' + field[0] + '"' + (sort.field === field[0] ? ' selected' : '') + '>' + field[1] + '</option>'; }).join('') + '</select><select id="db-sort-order-' + index + '"><option value="desc"' + (sort.order === 'desc' ? ' selected' : '') + '>' + descLabel + '</option><option value="asc"' + (sort.order === 'asc' ? ' selected' : '') + '>' + ascLabel + '</option></select></label>';
+}).join('') + '</div>';
+}
+accountRow = function (row) {
+const canManage = ['Admin', 'Booking'].includes(state.user.Role);
+const platforms = platformEntriesForRow(row);
+const selected = platforms.some(function (platform) { return state.selectedAccounts.has(platform.Account_ID); });
+const idAttrs = 'data-kol-inline-id="' + escapeAttr(row.Account_ID) + '" data-kol-inline-creator="' + escapeAttr(row.Creator_ID) + '"';
+const statusCell = canManage
+? '<select class="status-select status-' + statusTone(row.Source_Status || 'Not contacted') + '" data-kol-inline-field="Source_Status" ' + idAttrs + '>' + SOURCE_STATUS_OPTIONS.map(function (opt) { return '<option value="' + escapeAttr(opt) + '"' + ((row.Source_Status || 'Not contacted') === opt ? ' selected' : '') + '>' + escapeHtml(opt) + '</option>'; }).join('') + '</select>'
+: statusBadge(row.Source_Status || 'Not contacted');
+const categoryCell = canManage
+? inlineMultiEditor(row, 'Categories', row.Categories, state.config.categories || [], 'category')
+: compactTagSummary(row.Categories, 'category');
+const appsCell = canManage
+? inlineMultiEditor(row, 'App_Fit', row.App_Fit, state.config.apps || [], 'app')
+: compactTagSummary(row.App_Fit, 'app');
+return '<tr class="' + (selected ? 'row-selected' : '') + '"><td>' + (canManage ? creatorSelectionCheckbox(platforms) : '') + '</td>' +
+'<td><div class="creator-cell">' + avatar(row.Display_Name || row.Username, row.Market) + '<div><strong>' + escapeHtml(row.Display_Name || row.Username || 'Unnamed') + '</strong><small>@' + escapeHtml(row.Username || '—') + '</small>' + creatorAddedMeta(row) + '</div></div></td><td>' + marketBadge(row.Market) + '</td>' +
+'<td>' + categoryCell + '</td><td><div class="pick-platform-list database-platform-list">' + platforms.map(function (platform) { return renderCreatorPlatformCard(platform, canManage, true); }).join('') + '</div></td><td>' + appsCell + '</td>' +
+'<td>' + (canManage ? inlineContactEditor(row, platforms) : contactSummary(row, platforms)) + '</td><td>' + statusCell + '</td>' +
+'<td><div class="row-actions">' + (canManage ? '<button class="mini-edit-button" data-action="edit-kol-row" data-id="' + escapeAttr(row.Account_ID) + '">Full profile</button>' : '') + '</div></td></tr>';
+};
+function compactTagSummary(value, type) {
+const values = String(value || '').split(/[,|]/).map(function (item) { return item.trim(); }).filter(Boolean);
+if (!values.length) return '<span class="cell-sub">—</span>';
+const first = values[0];
+const tone = type === 'category' ? ' cat-' + categoryTone(first) : '';
+return '<div class="compact-tag-summary"><span class="' + tone.trim() + '">' + escapeHtml(first) + '</span>' + (values.length > 1 ? '<b>+' + (values.length - 1) + '</b>' : '') + '</div>';
+}
+function inlineMultiEditor(row, field, value, options, type) {
+const selected = String(value || '').split(/[,|]/).map(function (item) { return item.trim(); }).filter(Boolean);
+const availableOptions = (options || []).slice();
+selected.forEach(function (item) { if (availableOptions.indexOf(item) === -1) availableOptions.push(item); });
+const accountIds = platformEntriesForRow(row).map(function (platform) { return platform.Account_ID; }).filter(Boolean);
+return '<details class="inline-multi-editor"><summary>' + compactTagSummary(value, type) + '<i aria-hidden="true">✎</i></summary><div class="inline-multi-panel" data-inline-multi-field="' + escapeAttr(field) + '" data-inline-multi-account="' + escapeAttr(row.Account_ID) + '" data-inline-multi-accounts="' + escapeAttr(accountIds.join(',')) + '" data-inline-multi-creator="' + escapeAttr(row.Creator_ID) + '">' +
+availableOptions.map(function (option) {
+return '<label><input type="checkbox" value="' + escapeAttr(option) + '"' + (selected.indexOf(option) >= 0 ? ' checked' : '') + '><span>' + escapeHtml(option) + '</span></label>';
+}).join('') +
+'<button type="button" class="inline-save-button" data-action="save-inline-multi">Save</button></div></details>';
+}
+function contactSummary(row, platforms) {
+const contacts = [];
+function contactKey(value) {
+const clean = String(value || '').trim();
+if (!clean) return '';
+if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) return 'email:' + clean.toLowerCase();
+if (/^[+()\d\s.-]+$/.test(clean)) return 'phone:' + clean.replace(/[^\d]/g, '');
+return 'text:' + clean.toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '');
+}
+function addContact(label, value) {
+const clean = String(value || '').trim();
+const key = contactKey(clean);
+if (!clean || contacts.some(function (item) { return item.key === key; })) return;
+contacts.push({ label: label, value: clean, key: key });
+}
+addContact('Email', row.Creator_Email);
+addContact('Phone', row.Creator_Phone);
+addContact('LINE', row.Creator_LINE_ID);
+if (!contacts.length) return '<span class="contact-empty">No contact</span>';
+return '<div class="contact-stack">' + contacts.slice(0, 2).map(function (contact) {
+const label = String(contact.label || 'Contact');
+const emailHref = /email/i.test(label) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.value) ? 'mailto:' + contact.value : '';
+const phoneHref = /phone|mobile/i.test(label) && /^[+()\d\s.-]+$/.test(contact.value) ? 'tel:' + contact.value.replace(/[^\d+]/g, '') : '';
+const webHref = safeWorkspaceUrl(contact.value);
+const href = emailHref || phoneHref || webHref;
+const content = '<strong title="' + escapeAttr(contact.value) + '">' + escapeHtml(contact.value) + '</strong>';
+return '<span><small>' + escapeHtml(label) + '</small>' + (href ? '<a href="' + escapeAttr(href) + '"' + (webHref ? ' target="_blank" rel="noopener"' : '') + '>' + content + '</a>' : content) + '</span>';
+}).join('') + (contacts.length > 2 ? '<b>+' + (contacts.length - 2) + ' more</b>' : '') + '</div>';
+}
+function inlineContactEditor(row, platforms) {
+return '<div class="inline-contact-editor" data-contact-editor data-contact-account="' + escapeAttr(row.Account_ID || '') + '" data-contact-creator="' + escapeAttr(row.Creator_ID || '') + '">' +
+'<div class="contact-editor-head">' + contactSummary(row, platforms) +
+'<button type="button" class="platform-edit-button" data-action="edit-contact-info" aria-label="Edit contact information">✎</button></div>' +
+'<div class="contact-editor-panel is-hidden">' +
+'<div class="contact-master-fields"><label>Email<input type="email" data-contact-master-field="Email" value="' + escapeAttr(row.Creator_Email || '') + '"></label>' +
+'<label>Phone<input data-contact-master-field="Phone" value="' + escapeAttr(row.Creator_Phone || '') + '"></label>' +
+'<label>LINE ID<input data-contact-master-field="LINE_ID" value="' + escapeAttr(row.Creator_LINE_ID || '') + '"></label></div>' +
+'<p class="contact-editor-help">Contact information belongs to the creator and is shared across all platforms.</p>' +
+'<div class="contact-editor-actions"><button type="button" class="inline-cancel-button" data-action="cancel-contact-info">Cancel</button><button type="button" class="inline-save-button" data-action="save-contact-info">Save</button></div>' +
+'</div></div>';
+}
+function renderCreatorPlatformCard(platform, canEdit, selectable) {
+const accountId = platform.Account_ID || '';
+const url = safeWorkspaceUrl(platform.Profile_URL);
+const selected = state.selectedAccounts.has(accountId);
+const platformOptions = (state.config.platforms || []).map(function (item) {
+return '<option value="' + escapeAttr(item) + '"' + (item === platform.Platform ? ' selected' : '') + '>' + escapeHtml(item) + '</option>';
+}).join('');
+const selectControl = selectable && accountId
+? '<input class="platform-select-checkbox" type="checkbox" data-account-checkbox="' + escapeAttr(accountId) + '"' + (selected ? ' checked' : '') + ' aria-label="Select ' + escapeAttr(platform.Platform) + ' account">'
+: '';
+const header = (url ? '<a class="platform-card-link" href="' + escapeAttr(url) + '" target="_blank" rel="noopener">' + platformBadge(platform.Platform) + '<span>↗</span></a>' : platformBadge(platform.Platform));
+const editor = canEdit
+? '<div class="platform-card-editor is-hidden"><label>Platform<select data-platform-edit-field="Platform">' + platformOptions + '</select></label><label class="platform-url-field">Profile link<input type="url" data-platform-edit-field="Profile_URL" value="' + escapeAttr(platform.Profile_URL || '') + '"></label><label>Fee<input type="text" inputmode="numeric" data-numeric-input data-platform-edit-field="Starting_Fee" value="' + escapeAttr(formatInputNumber(platform.Starting_Fee || 0)) + '"></label><label>Followers<input type="text" inputmode="numeric" data-numeric-input data-platform-edit-field="Followers" value="' + escapeAttr(formatInputNumber(platform.Followers || 0)) + '"></label><div><button type="button" class="inline-cancel-button" data-action="cancel-platform-card">Cancel</button><button type="button" class="inline-save-button" data-action="save-platform-card">Save</button></div></div>'
+: '';
+return '<div class="creator-platform-card' + (selected ? ' is-selected' : '') + '" data-platform-card="' + escapeAttr(accountId) + '" data-platform-creator="' + escapeAttr(platform.Creator_ID || '') + '">' +
+'<div class="platform-card-head">' + selectControl + header + (canEdit ? '<button type="button" class="platform-edit-button" data-action="edit-platform-card" aria-label="Edit platform">✎</button>' : '') + '</div>' +
+'<div class="platform-card-metrics"><span><small>Fee</small><strong>' + money(platform.Starting_Fee, platform.Currency) + '</strong></span><span><small>Followers</small><strong>' + compactNumber(platform.Followers || 0) + '</strong></span></div>' +
+editor + '</div>';
+}
+const SOURCE_STATUS_OPTIONS = ['Not contacted', 'Pending', 'Contacted', 'Deal', 'No Response', "Can't contact", 'Decline', 'Black List'];
+function applyDatabaseRecordUpdates(records) {
+records = Array.isArray(records) ? records : [records];
+records.filter(Boolean).forEach(function (record) {
+const row = state.db.rows.find(function (item) {
+if (item.Creator_ID && record.Creator_ID && item.Creator_ID === record.Creator_ID) return true;
+if (item.Account_ID === record.Account_ID) return true;
+return Array.isArray(item.Platforms_List) && item.Platforms_List.some(function (platform) {
+return platform.Account_ID === record.Account_ID;
+});
+});
+if (!row) return;
+['Display_Name','Legal_Name','Categories','Creator_Email','Creator_Phone','Creator_LINE_ID','Source_Status','Source_PIC','Title','ID_No','Date_Of_Issue','Permanent_Address','Bank_Account','Bank_Name'].forEach(function (field) {
+if (Object.prototype.hasOwnProperty.call(record, field)) row[field] = record[field];
+});
+if (Array.isArray(row.Platforms_List)) {
+const platformIndex = row.Platforms_List.findIndex(function (platform) { return platform.Account_ID === record.Account_ID; });
+if (platformIndex >= 0) row.Platforms_List[platformIndex] = Object.assign({}, row.Platforms_List[platformIndex], record);
+else if (record.Account_ID && record.Creator_ID === row.Creator_ID) row.Platforms_List.push(record);
+const positiveFees = row.Platforms_List.map(function (platform) { return Number(platform.Starting_Fee || 0); }).filter(function (fee) { return fee > 0; });
+row.Followers = Math.max.apply(null, row.Platforms_List.map(function (platform) { return Number(platform.Followers || 0); }).concat([0]));
+row.Starting_Fee = positiveFees.length ? Math.min.apply(null, positiveFees) : 0;
+row.Engagement_Rate = Math.max.apply(null, row.Platforms_List.map(function (platform) { return Number(platform.Engagement_Rate || 0); }).concat([0]));
+const apps = [];
+row.Platforms_List.forEach(function (platform) {
+String(platform.App_Fit || '').split(/[,|]/).map(function (item) { return item.trim(); }).filter(Boolean).forEach(function (app) {
+if (apps.indexOf(app) === -1) apps.push(app);
+});
+});
+row.App_Fit = apps.join(', ');
+} else {
+Object.assign(row, record);
+}
+});
+}
+async function saveKolInlineField(input) {
+const field = input.dataset.kolInlineField;
+const accountId = input.dataset.kolInlineId;
+const creatorId = input.dataset.kolInlineCreator;
+const rawValue = input.tagName === 'SELECT' ? input.value : stripNumberFormatting(input.value);
+const payload = { Account_ID: accountId, Creator_ID: creatorId };
+payload[field] = rawValue;
+input.disabled = true;
+try {
+const result = await server('updateKolDatabaseRecord', payload);
+applyDatabaseRecordUpdates(result.record);
+if (input.tagName === 'SELECT') input.className = 'status-select status-' + statusTone(rawValue);
+showToast('Saved.');
+} catch (error) {
+showToast(error.message || 'Save failed.', true);
+}
+input.disabled = false;
+}
+async function saveInlineMulti(button) {
+const panel = button.closest('[data-inline-multi-field]');
+if (!panel) return;
+const field = panel.dataset.inlineMultiField;
+const values = Array.prototype.slice.call(panel.querySelectorAll('input:checked')).map(function (input) { return input.value; });
+const payload = {
+Account_ID: panel.dataset.inlineMultiAccount,
+Account_IDs: String(panel.dataset.inlineMultiAccounts || '').split(',').filter(Boolean),
+Creator_ID: panel.dataset.inlineMultiCreator,
+Apply_To_Creator_Accounts: field === 'App_Fit',
+};
+payload[field] = values.join(', ');
+button.disabled = true;
+button.textContent = 'Saving…';
+try {
+const result = await server('updateKolDatabaseRecord', payload);
+applyDatabaseRecordUpdates(result.record);
+const row = state.db.rows.find(function (item) { return item.Creator_ID === payload.Creator_ID; });
+if (row) {
+row[field] = values.join(', ');
+if (field === 'App_Fit' && Array.isArray(row.Platforms_List)) {
+row.Platforms_List.forEach(function (platform) { platform.App_Fit = values.join(', '); });
+}
+}
+state.db.cache.clear();
+renderDatabaseResults();
+showToast(field === 'Categories' ? 'Categories updated.' : 'Apps updated.');
+} catch (error) {
+button.disabled = false;
+button.textContent = 'Save';
+showToast(error.message || 'Save failed.', true);
+}
+}
+function togglePlatformCardEditor(button, open) {
+const card = button.closest('[data-platform-card]');
+if (!card) return;
+const editor = card.querySelector('.platform-card-editor');
+if (!editor) return;
+editor.classList.toggle('is-hidden', !open);
+card.classList.toggle('is-editing', open);
+}
+async function savePlatformCard(button) {
+const card = button.closest('[data-platform-card]');
+if (!card) return;
+const payload = { Account_ID: card.dataset.platformCard, Creator_ID: card.dataset.platformCreator || '' };
+card.querySelectorAll('[data-platform-edit-field]').forEach(function (input) {
+payload[input.dataset.platformEditField] = input.dataset.platformEditField === 'Followers' || input.dataset.platformEditField === 'Starting_Fee'
+? stripNumberFormatting(input.value)
+: input.value.trim();
+});
+button.disabled = true;
+button.textContent = 'Saving…';
+try {
+const result = await server('updateKolDatabaseRecord', payload);
+applyDatabaseRecordUpdates(result.record);
+state.db.cache.clear();
+renderDatabaseResults();
+showToast('Platform details updated.');
+} catch (error) {
+button.disabled = false;
+button.textContent = 'Save';
+showToast(error.message || 'Save failed.', true);
+}
+}
+function toggleContactEditor(button, open) {
+const editor = button.closest('[data-contact-editor]');
+if (!editor) return;
+const panel = editor.querySelector('.contact-editor-panel');
+if (!panel) return;
+if (open) {
+document.querySelectorAll('[data-contact-editor].is-editing').forEach(function (otherEditor) {
+if (otherEditor === editor) return;
+const otherPanel = otherEditor.querySelector('.contact-editor-panel');
+if (otherPanel) otherPanel.classList.add('is-hidden');
+otherEditor.classList.remove('is-editing');
+});
+}
+panel.classList.toggle('is-hidden', !open);
+editor.classList.toggle('is-editing', open);
+}
+async function saveContactInfo(button) {
+const editor = button.closest('[data-contact-editor]');
+if (!editor) return;
+const payload = {
+Creator_ID: editor.dataset.contactCreator || '',
+Account_ID: editor.dataset.contactAccount || '',
+};
+editor.querySelectorAll('[data-contact-master-field]').forEach(function (input) {
+payload[input.dataset.contactMasterField] = input.value.trim();
+});
+button.disabled = true;
+button.textContent = 'Saving…';
+try {
+const result = await server('updateKolContactInfo', payload);
+applyDatabaseRecordUpdates(result.records || []);
+state.db.cache.clear();
+renderDatabaseResults();
+showToast('Contact information updated.');
+} catch (error) {
+button.disabled = false;
+button.textContent = 'Save';
+showToast(error.message || 'Save failed.', true);
+}
+}
+function formatEngagement(value) {
+const number = Number(String(value || 0).replace(/[^0-9.-]/g, '')) || 0;
+return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(number) + '%';
+}
+updateSelectionBar = function () {
+const count = state.selectedAccounts.size;
+if (!count || state.view !== 'database' || !['Admin', 'Booking', 'Marketing'].includes(state.user.Role)) {
+selectionBar.classList.add('is-hidden');
+return;
+}
+selectionBar.classList.remove('is-hidden');
+selectionBar.innerHTML = '<span><strong>' + count + '</strong> KOL account' + (count === 1 ? '' : 's') + ' selected</span><button class="ghost-button" id="clear-selection">Clear</button><button class="ghost-button" id="add-to-shortlist">Add to shortlist</button><button class="primary-button" id="add-to-campaign">Add to campaign →</button>';
+document.getElementById('clear-selection').onclick = function () { state.selectedAccounts.clear(); renderDatabaseResults(); };
+document.getElementById('add-to-shortlist').onclick = openAddToShortlistModal;
+document.getElementById('add-to-campaign').onclick = openAddToCampaignModal;
+};
+function openAddToShortlistModal() {
+if (!state.shortlists.length) return openShortlistModal();
+const preferred = state.preferredShortlistId;
+openModal('<form id="add-shortlist-form" class="modal-card"><div class="modal-heading"><div><p class="eyebrow">Sourcing pool</p><h2>Add ' + state.selectedAccounts.size + ' KOLs to shortlist</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><label>Shortlist<select name="shortlistId" required>' + state.shortlists.map(function (shortlist) {
+return '<option value="' + escapeAttr(shortlist.Shortlist_ID) + '"' + (shortlist.Shortlist_ID === preferred ? ' selected' : '') + '>' + escapeHtml(shortlist.Shortlist_Name + ' · ' + shortlist.Market) + '</option>';
+}).join('') + '</select></label><div class="modal-note"><span>◇</span><p>Existing members are skipped automatically.</p></div><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Add to shortlist</button></div></form>');
+}
+renderShortlistDetailView = function () {
+const data = state.shortlistDetailData;
+const shortlist = data.shortlist;
+const kols = data.kols || [];
+const canManage = ['Admin', 'Booking', 'Marketing'].includes(state.user.Role);
+main.innerHTML = '<button class="back-button" data-action="back-shortlists">← All shortlists</button>' +
+pageHeading('Sourcing pool', shortlist.Shortlist_Name, shortlist.Market + ' · ' + (shortlist.Month || 'No month') + ' · ' + (shortlist.Status || 'Draft'), canManage
+  ? '<button class="primary-button" data-action="add-kols-shortlist">＋ Add KOLs</button>' +
+    (state.user.Role === 'Admin' || String(shortlist.Owner_Email || '').toLowerCase() === String(state.user.Email || '').toLowerCase()
+      ? '<button class="danger-button" data-action="delete-shortlist" data-id="' + escapeAttr(shortlist.Shortlist_ID) + '">Delete shortlist</button>'
+      : '')
+  : '') +
+(kols.length ? '<section class="table-card card"><div class="table-summary"><span><strong>' + kols.length + '</strong> KOL accounts</span></div><div class="table-scroll"><table class="data-table"><thead><tr><th>Creator</th><th>Platform</th><th>Review</th><th>Fee</th><th>Followers</th><th></th></tr></thead><tbody>' + kols.map(function (row) {
+return '<tr><td><div class="creator-cell">' + avatar(row.Display_Name || row.Username, row.Market) + '<div><strong>' + escapeHtml(row.Display_Name || row.Username) + '</strong><small>@' + escapeHtml(row.Username || '—') + '</small></div></div></td><td>' + platformBadge(row.Platform) + '</td><td>' + statusBadge(row.Review_Status || 'New') + '</td><td><strong>' + money(row.Starting_Fee, row.Currency) + '</strong></td><td>' + formatNumber(row.Followers || 0) + '</td><td>' + (canManage ? '<div class="row-actions"><button class="mini-edit-button" data-action="edit-shortlist-kol" data-id="' + escapeAttr(row.Shortlist_KOL_ID) + '">Review</button><button class="mini-remove-button" data-action="remove-shortlist-kol" data-id="' + escapeAttr(row.Shortlist_KOL_ID) + '">Remove</button></div>' : '') + '</td></tr>';
+}).join('') + '</tbody></table></div></section>' : emptyState('◇', 'Empty shortlist', 'Add KOLs from the database.', canManage ? '<button class="primary-button" data-action="add-kols-shortlist">Open database</button>' : ''));
+};
+function openCurrentShortlistDatabase() {
+const shortlist = state.shortlistDetailData && state.shortlistDetailData.shortlist;
+if (!shortlist) return;
+state.shortlistReturnId = shortlist.Shortlist_ID;
+state.preferredShortlistId = shortlist.Shortlist_ID;
+state.db.market = shortlist.Market;
+navigate('database');
+}
+function openShortlistKolModal(id) {
+const row = state.shortlistDetailData.kols.find(function (item) { return item.Shortlist_KOL_ID === id; });
+if (!row) return;
+openModal('<form id="edit-shortlist-kol-form" class="modal-card"><div class="modal-heading"><div><p class="eyebrow">Shortlist review</p><h2>' + escapeHtml(row.Display_Name || row.Username) + '</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><input type="hidden" name="Shortlist_KOL_ID" value="' + escapeAttr(id) + '"><label>Review status<select name="Review_Status">' + optionList(['New','Reviewing','Approved','Rejected','Backup'], row.Review_Status || 'New') + '</select></label><label>Reviewer email<input type="email" name="Reviewer_Email" value="' + escapeAttr(row.Reviewer_Email || state.user.Email || '') + '"></label><label>Notes<textarea name="Notes">' + escapeHtml(row.Notes || '') + '</textarea></label><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Save review</button></div></form>');
+}
+renderCalendar = async function () {
+const calendar = state.calendar;
+main.innerHTML = pageHeading('Operational timelines', 'Calendar', 'KOL posting dates and full campaign duration in separate views.', '<div class="calendar-nav"><button data-action="calendar-prev">←</button><strong>' + calendarMonthLabel(calendar.year, calendar.month) + '</strong><button data-action="calendar-next">→</button></div>') + '<div id="calendar-content">' + (calendar.data ? renderCalendarBoards(calendar.data) : '<div class="skeleton"></div>') + '</div>';
+if (calendar.data && calendar.data.year === calendar.year && calendar.data.month === calendar.month) return;
+calendar.loading = true;
+try {
+const data = await server('getCalendarData', { year: calendar.year, month: calendar.month });
+if (state.view !== 'calendar' || calendar.year !== data.year || calendar.month !== data.month) return;
+calendar.data = data;
+calendar.loading = false;
+const target = document.getElementById('calendar-content');
+if (target) target.innerHTML = renderCalendarBoards(data);
+} catch (error) { showPageError(error); }
+};
+function renderCalendarBoards(data) {
+return renderKolPostingCalendar(data) + renderCampaignTimeline(data);
+}
+function renderKolPostingCalendar(data) {
+const first = new Date(data.year, data.month - 1, 1);
+const offset = (first.getDay() + 6) % 7;
+const days = new Date(data.year, data.month, 0).getDate();
+const cells = Array.from({ length: Math.ceil((offset + days) / 7) * 7 }, function (_, index) { const day = index - offset + 1; return day > 0 && day <= days ? day : null; });
+const events = {};
+(data.posts || []).forEach(function (post) { const day = Number(String(post.Posting_Date).slice(8, 10)); if (!events[day]) events[day] = []; events[day].push(post); });
+const eventMarkup = function (day) {
+const dayEvents = events[day] || [];
+const expanded = state.calendar.expandedDays.has(String(day));
+const visibleEvents = expanded ? dayEvents : dayEvents.slice(0, 3);
+const cards = visibleEvents.map(function (post) {
+return '<button class="posting-event" data-action="view-campaign" data-id="' + escapeAttr(post.Campaign_ID) + '"><span>' + platformBadge(post.Platform) + statusBadge(post.Content_Status) + '</span><strong>' + escapeHtml(post.Creator_Name || post.Username || 'KOL') + '</strong><small>' + escapeHtml(post.App + ' · ' + post.Campaign_Name) + '</small></button>';
+}).join('');
+if (dayEvents.length <= 3) return cards;
+return cards + '<button class="calendar-more" data-action="calendar-more" data-day="' + day + '">' + (expanded ? 'Show less' : '+' + (dayEvents.length - 3) + ' more') + '</button>';
+};
+return '<section class="card timeline-card"><div class="card-head"><div><p class="eyebrow">KOL posting timeline</p><h2>Posting schedule</h2></div><span class="status status-info"><i></i>' + (data.posts || []).length + ' posts</span></div><div class="week-labels">' + ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(function (day) { return '<span>' + day + '</span>'; }).join('') + '</div><div class="posting-calendar">' + cells.map(function (day) {
+return '<div class="posting-day' + (day ? '' : ' is-empty') + '">' + (day ? '<b>' + day + '</b>' + eventMarkup(day) : '') + '</div>';
+}).join('') + '</div></section>';
+}
+function renderCampaignTimeline(data) {
+const days = new Date(data.year, data.month, 0).getDate();
+const rangeStart = new Date(data.year, data.month - 1, 1);
+const rangeEnd = new Date(data.year, data.month, 0);
+const rows = (data.campaigns || []).map(function (campaign) {
+const originalStart = safeDate(campaign.Start_Date || campaign.Posting_Start);
+const originalEnd = safeDate(campaign.End_Date || campaign.Posting_End || campaign.Start_Date || campaign.Posting_Start);
+if (!originalStart || !originalEnd) return '';
+const clippedStart = originalStart < rangeStart ? rangeStart : originalStart;
+const clippedEnd = originalEnd > rangeEnd ? rangeEnd : originalEnd;
+const startDay = clippedStart.getDate();
+const span = Math.max(1, Math.round((clippedEnd - clippedStart) / 86400000) + 1);
+const color = appColor(campaign.App);
+return '<div class="campaign-timeline-row"><button class="timeline-campaign-label" data-action="view-campaign" data-id="' + escapeAttr(campaign.Campaign_ID) + '">' + appTile(campaign.App, campaign.Market) + '<span><strong>' + escapeHtml(campaign.Campaign_Name) + '</strong><small>' + escapeHtml(campaign.App + ' · ' + campaign.Market) + '</small></span></button><div class="timeline-track" style="--days:' + days + ';--campaign-color:' + color + ';--campaign-text:' + appTextColor(campaign.App) + '">' + Array.from({ length: days }, function (_, index) { return '<i style="grid-column:' + (index + 1) + '"></i>'; }).join('') + '<button class="campaign-duration-bar" style="grid-column:' + startDay + ' / span ' + span + '" data-action="view-campaign" data-id="' + escapeAttr(campaign.Campaign_ID) + '" title="' + escapeAttr(dateRange(campaign)) + '"><span>' + escapeHtml(campaign.App + ' · ' + campaign.Campaign_Name) + '</span></button></div></div>';
+}).filter(Boolean).join('');
+return '<section class="card timeline-card campaign-gantt"><div class="card-head"><div><p class="eyebrow">Campaign timeline</p><h2>Full campaign duration</h2></div><span class="status status-brand"><i></i>' + (data.campaigns || []).length + ' campaigns</span></div><div class="campaign-timeline-scroll"><div class="campaign-timeline-head"><span>Campaign</span><div class="timeline-days" style="--days:' + days + '">' + Array.from({ length: days }, function (_, index) { return '<b>' + (index + 1) + '</b>'; }).join('') + '</div></div>' + (rows || '<div class="inline-empty">No campaign overlaps this month.</div>') + '</div></section>';
+}
+function calendarMonthLabel(year, month) {
+return new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(new Date(year, month - 1, 1));
+}
+handleMainClick = function (event) {
+const node = event.target.closest('[data-action]');
+if (!node) return;
+const action = node.dataset.action;
+if (action === 'toggle-db-filters') { state.db.filtersOpen = !state.db.filtersOpen; return renderDatabase(); }
+if (action === 'apply-db-filters') { collectDatabaseFilters(); return renderDatabase(); }
+if (action === 'clear-db-filters') { clearDatabaseFilters(); return renderDatabase(); }
+if (action === 'market-filter') { state.db.market = node.dataset.market; state.db.offset = 0; return renderDatabase(); }
+if (action === 'db-view-tab') {
+if (state.user.Role === 'Marketing' && node.dataset.tab !== 'picks') return;
+if (state.db.viewTab === node.dataset.tab) return;
+state.db.viewTab = node.dataset.tab;
+state.db.status = node.dataset.tab === 'picks' ? 'Deal' : 'All';
+state.db.offset = 0;
+state.db.rows = [];
+state.selectedAccounts.clear();
+return renderDatabase();
+}
+if (action === 'edit-platform-card') { togglePlatformCardEditor(node, true); return; }
+if (action === 'cancel-platform-card') { togglePlatformCardEditor(node, false); return; }
+if (action === 'save-platform-card') return savePlatformCard(node);
+if (action === 'edit-contact-info') { toggleContactEditor(node, true); return; }
+if (action === 'cancel-contact-info') { toggleContactEditor(node, false); return; }
+if (action === 'save-contact-info') return saveContactInfo(node);
+if (action === 'save-inline-multi') return saveInlineMulti(node);
+if (action === 'add-kols-shortlist') return openCurrentShortlistDatabase();
+if (action === 'edit-shortlist-kol') return openShortlistKolModal(node.dataset.id);
+if (action === 'remove-shortlist-kol') return removeShortlistMember(node.dataset.id);
+if (action === 'calendar-prev' || action === 'calendar-next') {
+const date = new Date(state.calendar.year, state.calendar.month - 1 + (action === 'calendar-next' ? 1 : -1), 1);
+state.calendar.year = date.getFullYear(); state.calendar.month = date.getMonth() + 1; state.calendar.data = null; state.calendar.expandedDays.clear(); return renderCalendar();
+}
+if (action === 'calendar-more') {
+const day = String(node.dataset.day);
+if (state.calendar.expandedDays.has(day)) state.calendar.expandedDays.delete(day);
+else state.calendar.expandedDays.add(day);
+const target = document.getElementById('calendar-content');
+if (target && state.calendar.data) target.innerHTML = renderCalendarBoards(state.calendar.data);
+return;
+}
+return handleMainClickV140(event);
+};
+const handleModalClickV199 = handleModalClick;
+handleModalClick = function (event) {
+const node = event.target.closest('[data-action]');
+if (!node) return handleModalClickV199(event);
+const action = node.dataset.action;
+if (action === 'add-full-profile-platform') {
+const form = node.closest('#edit-kol-form');
+if (!form) return;
+const used = {};
+form.querySelectorAll('[data-platform-name]').forEach(function (section) {
+used[String(section.dataset.platformName || '').toLowerCase()] = true;
+});
+form.querySelectorAll('[data-new-full-profile-platform] [data-new-full-profile-field="Platform"]').forEach(function (select) {
+used[String(select.value || '').toLowerCase()] = true;
+});
+const platform = (state.config.platforms || []).find(function (item) { return !used[String(item).toLowerCase()]; });
+if (!platform) { showToast('All available platforms have already been added.', true); return; }
+const list = form.querySelector('.full-profile-platform-list');
+if (!list) return;
+list.insertAdjacentHTML('beforeend', fullProfileNewPlatformSection(platform));
+refreshFullProfilePlatformCount_(form);
+const added = list.lastElementChild;
+if (added) added.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+return;
+}
+if (action === 'remove-full-profile-platform') {
+const section = node.closest('[data-new-full-profile-platform]');
+const form = node.closest('#edit-kol-form');
+if (section) section.remove();
+if (form) refreshFullProfilePlatformCount_(form);
+return;
+}
+if (action === 'delete-kol-profile') return deleteKolProfileFromModal_(node);
+return handleModalClickV199(event);
+};
+function refreshFullProfilePlatformCount_(form) {
+const current = form.querySelectorAll('[data-full-profile-platform]').length;
+const added = form.querySelectorAll('[data-new-full-profile-platform]').length;
+const label = form.querySelector('.full-profile-platform-toolbar > span');
+if (!label) return;
+label.textContent = current + ' active platform' + (current === 1 ? '' : 's') + (added ? ' · ' + added + ' new' : '');
+}
+async function deleteKolProfileFromModal_(button) {
+const creatorName = button.dataset.name || 'this KOL';
+const confirmed = window.confirm(
+'Delete ' + creatorName + ' from the active KOL Database?\n\n' +
+'All platform profiles will be removed from active lists. Existing Campaign, Contract and Payment history will be preserved.'
+);
+if (!confirmed) return;
+button.disabled = true;
+button.textContent = 'Deleting…';
+try {
+const result = await server('deleteKolProfile', {
+Creator_ID: button.dataset.creator || '',
+Account_ID: button.dataset.account || '',
+});
+const removedIds = result.Account_IDs || [];
+removedIds.forEach(function (id) { state.selectedAccounts.delete(id); });
+state.db.rows = (state.db.rows || []).filter(function (row) { return row.Creator_ID !== result.Creator_ID; });
+state.db.total = Math.max(0, Number(state.db.total || 0) - 1);
+state.db.cache.clear();
+closeModal();
+renderDatabaseResults();
+showToast('KOL profile deleted. Existing campaign history was preserved.');
+} catch (error) {
+button.disabled = false;
+button.textContent = 'Delete profile';
+showToast(error.message || 'Delete failed.', true);
+}
+}
+handleMainInput = function (event) {
+if (event.target.matches('input[data-numeric-input]')) {
+if (event.isComposing) return;
+formatNumericInputPreservingCaret_(event.target);
+return;
+}
+if (/^db-filter-(followers|fee|engagement)-/.test(event.target.id)) {
+if (event.isComposing) return;
+formatNumericInputPreservingCaret_(event.target);
+return;
+}
+if (event.target.id === 'db-query') {
+state.db.query = event.target.value;
+state.db.offset = 0;
+clearTimeout(searchTimer);
+searchTimer = setTimeout(function () { loadAccounts(); }, 500);
+return;
+}
+return handleMainInputV140(event);
+};
+handleMainChange = function (event) {
+if (event.target.id === 'select-visible') {
+databaseVisibleAccountIds().forEach(function (id) {
+if (event.target.checked) state.selectedAccounts.add(id);
+else state.selectedAccounts.delete(id);
+});
+renderDatabaseResults();
+return;
+}
+if (event.target.matches('[data-creator-account-checkbox]')) {
+String(event.target.dataset.creatorAccountCheckbox || '').split(',').filter(Boolean).forEach(function (id) {
+if (event.target.checked) state.selectedAccounts.add(id);
+else state.selectedAccounts.delete(id);
+});
+renderDatabaseResults();
+return;
+}
+if (event.target.matches('[data-account-checkbox]')) {
+const id = event.target.dataset.accountCheckbox;
+if (event.target.checked) state.selectedAccounts.add(id);
+else state.selectedAccounts.delete(id);
+renderDatabaseResults();
+return;
+}
+if (event.target.matches('select[data-kol-inline-field]')) {
+saveKolInlineField(event.target);
+return;
+}
+const match = event.target.id.match(/^db-sort-(field|order)-(\d)$/);
+if (match) {
+const index = Number(match[2]);
+state.db.sorts[index][match[1]] = event.target.value;
+state.db.offset = 0;
+return loadAccounts();
+}
+return handleMainChangeV140(event);
+};
+handleModalSubmit = async function (event) {
+const form = event.target;
+const localForms = ['add-kol-direct-form','edit-kol-form','kol-import-run-form','campaign-edit-form','campaign-kol-edit-form','deliverable-form','content-feedback-form','contract-workspace-form','payment-workspace-form','add-shortlist-form','edit-shortlist-kol-form','import-performance-form','generate-contract-operation-form'];
+const createAndAddShortlist = form.id === 'shortlist-form' && state.selectedAccounts.size > 0;
+if (localForms.indexOf(form.id) === -1 && !createAndAddShortlist) return handleModalSubmitV140(event);
+event.preventDefault();
+setFormBusy(form, true);
+try {
+const payload = formToObject(form);
+if (form.id === 'add-kol-direct-form') {
+const result = await server('createKolRecordMultiPlatform', payload);
+state.db.cache.clear(); closeModal(); await loadAccounts(true);
+const skippedMsg = result.Skipped && result.Skipped.length ? (' (' + result.Skipped.length + ' link(s) skipped — already exists)') : '';
+showToast(result.Created_Accounts.length + ' account(s) created.' + skippedMsg); return;
+}
+if (form.id === 'kol-import-run-form') {
+const result = await server('importKolsFromGoogleSheet', payload);
+state.selectedAccounts.clear(); state.db.offset = 0; state.db.cache.clear(); await refreshDashboard(); closeModal(); renderDatabase();
+showToast(result.accountsCreated + ' accounts imported, ' + result.accountsUpdated + ' updated.'); return;
+}
+if (form.id === 'shortlist-form') {
+const shortlist = await server('createShortlist', payload);
+shortlist.KOL_Count = 0; shortlist.Approved_Count = 0; state.shortlists.unshift(shortlist);
+const result = await server('addAccountsToShortlist', { shortlistId: shortlist.Shortlist_ID, accountIds: Array.from(state.selectedAccounts) });
+shortlist.KOL_Count = result.added;
+state.selectedAccounts.clear(); closeModal(); await openShortlistDetail(shortlist.Shortlist_ID); showToast(result.added + ' KOL(s) added to the new shortlist.'); return;
+}
+if (form.id === 'edit-kol-form') {
+payload.Platform_Updates = Array.prototype.slice.call(form.querySelectorAll('[data-full-profile-platform]')).map(function (section) {
+const update = { Account_ID: section.dataset.platformAccount || '' };
+section.querySelectorAll('[data-full-profile-field]').forEach(function (input) {
+update[input.dataset.fullProfileField] = input.dataset.numericInput ? stripNumberFormatting(input.value) : input.value.trim();
+});
+return update;
+}).filter(function (update) { return update.Account_ID; });
+payload.New_Platforms = Array.prototype.slice.call(form.querySelectorAll('[data-new-full-profile-platform]')).map(function (section) {
+const record = {};
+section.querySelectorAll('[data-new-full-profile-field]').forEach(function (input) {
+record[input.dataset.newFullProfileField] = input.dataset.numericInput
+? stripNumberFormatting(input.value)
+: input.value.trim();
+});
+return record;
+});
+payload.Apply_To_Creator_Accounts = true;
+const result = await server('updateKolDatabaseRecord', payload);
+applyDatabaseRecordUpdates(result.records || result.record);
+state.db.cache.clear(); closeModal(); renderDatabaseResults();
+showToast(result.createdAccounts && result.createdAccounts.length
+? 'KOL updated and ' + result.createdAccounts.length + ' platform added.'
+: 'KOL updated without reloading the page.');
+return;
+}
+if (form.id === 'add-shortlist-form') {
+payload.accountIds = Array.from(state.selectedAccounts);
+const result = await server('addAccountsToShortlist', payload);
+const returnId = state.shortlistReturnId || payload.shortlistId;
+adjustShortlistSummary(payload.shortlistId, result.added, 0);
+state.selectedAccounts.clear(); state.shortlistReturnId = ''; state.preferredShortlistId = ''; closeModal();
+await openShortlistDetail(returnId); showToast(result.added + ' added; ' + result.skipped + ' skipped.'); return;
+}
+if (form.id === 'edit-shortlist-kol-form') {
+const updated = await server('updateShortlistKol', payload);
+const index = state.shortlistDetailData.kols.findIndex(function (row) { return row.Shortlist_KOL_ID === updated.Shortlist_KOL_ID; });
+const wasApproved = index >= 0 && state.shortlistDetailData.kols[index].Review_Status === 'Approved';
+if (index >= 0) state.shortlistDetailData.kols[index] = Object.assign({}, state.shortlistDetailData.kols[index], updated);
+const isApproved = updated.Review_Status === 'Approved';
+if (wasApproved !== isApproved) adjustShortlistSummary(state.shortlistDetailData.shortlist.Shortlist_ID, 0, isApproved ? 1 : -1);
+closeModal(); renderShortlistDetailView(); showToast('Shortlist review updated.'); return;
+}
+if (form.id === 'campaign-edit-form') {
+const updated = await server('updateCampaign', payload);
+state.campaignDetail.campaign = Object.assign({}, state.campaignDetail.campaign, updated);
+patchCampaignSummary(updated); closeModal(); renderCampaignDetail(); showToast('Campaign updated.'); refreshCampaignSummariesInBackground(); return;
+}
+if (form.id === 'campaign-kol-edit-form') {
+const updated = await server('updateCampaignKol', payload);
+patchWorkspaceRow('campaignKols', 'Campaign_KOL_ID', updated);
+(updated.Generated_Deliverables || []).forEach(function (record) { patchWorkspaceRow('deliverables', 'Deliverable_ID', enrichWorkspaceRecord(record)); });
+recalculateWorkspaceMetrics(); closeModal(); invalidateOperationsCaches_(); applyCampaignWorkspaceUpdate_(state.campaignDetail); showToast('KOL updated instantly.'); refreshCampaignSummariesInBackground(); return;
+}
+if (form.id === 'deliverable-form') {
+const updated = await server('saveDeliverable', payload);
+patchWorkspaceRow('deliverables', 'Deliverable_ID', enrichWorkspaceRecord(updated)); syncCampaignKolFromRecord(updated, 'Content_Status'); recalculateWorkspaceMetrics(); closeModal(); applyCampaignWorkspaceUpdate_(state.campaignDetail); showToast('Deliverable saved.'); return;
+}
+if (form.id === 'content-feedback-form') {
+const result = await server('addContentFeedback', payload);
+const row = (state.campaignDetail.deliverables || []).find(function (item) { return item.Deliverable_ID === payload.Deliverable_ID; });
+if (row) {
+row.Feedback_History = (row.Feedback_History || []).concat([result.feedback]);
+row.Feedback_Count = row.Feedback_History.length;
+row.Latest_Feedback = result.feedback.Feedback;
+row.Revision_Round = result.Revision_Round;
+row.Content_Status = result.Content_Status;
+syncCampaignKolFromRecord(row, 'Content_Status');
+}
+recalculateWorkspaceMetrics();
+closeModal();
+applyCampaignWorkspaceUpdate_(state.campaignDetail);
+showToast('Feedback round added.');
+server('sendContentFeedbackEmail', { Feedback_ID: result.feedback.Feedback_ID }).catch(function () {});
+return;
+}
+if (form.id === 'contract-workspace-form') {
+const updated = await server('saveContractRecord', payload);
+patchWorkspaceRow('contracts', 'Contract_ID', enrichWorkspaceRecord(updated)); syncCampaignKolFromRecord(updated, 'Contract_Status', updated.Sign_Status); recalculateWorkspaceMetrics(); closeModal(); invalidateOperationsCaches_(); applyCampaignWorkspaceUpdate_(state.campaignDetail); showToast('Contract saved.'); return;
+}
+if (form.id === 'payment-workspace-form') {
+const updated = await server('savePaymentRecord', payload);
+patchWorkspaceRow('payments', 'Payment_ID', enrichWorkspaceRecord(updated)); syncCampaignKolFromRecord(updated, 'Payment_Status'); recalculateWorkspaceMetrics(); closeModal(); invalidateOperationsCaches_(); applyCampaignWorkspaceUpdate_(state.campaignDetail);
+// Amount_Warning là cảnh báo KHÔNG chặn từ server (F17): số tiền lệch so với chi phí
+// đã chốt hoặc tổng BBNT. Hiện dạng toast lỗi để nó không trôi qua, nhưng bản ghi ĐÃ
+// được lưu — đây không phải thất bại.
+showToast(updated.Amount_Warning ? 'Payment saved. ' + updated.Amount_Warning : 'Payment saved.', Boolean(updated.Amount_Warning)); return;
+}
+if (form.id === 'generate-contract-operation-form') {
+const result = await server('generateContractV2', payload);
+state.operations.contractData = null;
+state.operations.contracts = null;
+// Without this the Contract hub keeps its old list, so the new contract has no
+// Prepare BBNT button until a full page reload.
+if (state.contractHub) state.contractHub.data = null;
+closeModal();
+showToast((result.reused ? 'Existing contract opened: ' : 'Contract created: ') + result.Contract_No + '.');
+renderOperations('contracts');
+return;
+}
+if (form.id === 'import-performance-form') {
+const result = await server('importPerformanceCsvV2', payload);
+closeModal();
+if (state.view === 'performance') {
+state.operations.performance = null;
+await renderPerformance();
+} else {
+await refreshCampaignWorkspace();
+}
+const unmatchedMsg = result.unmatched ? (', ' + result.unmatched + ' row(s) had no matching Post URL') : '';
+showToast('Updated ' + result.matched + ' deliverable(s)' + unmatchedMsg + '.');
+return;
+}
+} catch (error) { showToast(error.message || String(error), true); setFormBusy(form, false); }
+};
+function clearDatabaseFilters() {
+Object.assign(state.db, { platform: 'All', platforms: [], app: 'All', status: state.user.Role === 'Marketing' || state.db.viewTab === 'picks' ? 'Deal' : 'All', categories: [], followerRanges: [], contactChannel: 'All', hasContact: 'All', minFee: '', maxFee: '', minEngagement: '', offset: 0 });
+}
+async function removeShortlistMember(id) {
+if (!window.confirm('Remove this KOL from the shortlist?')) return;
+try {
+const removed = state.shortlistDetailData.kols.find(function (row) { return row.Shortlist_KOL_ID === id; });
+await server('removeShortlistKol', { Shortlist_KOL_ID: id });
+state.shortlistDetailData.kols = state.shortlistDetailData.kols.filter(function (row) { return row.Shortlist_KOL_ID !== id; });
+adjustShortlistSummary(state.shortlistDetailData.shortlist.Shortlist_ID, -1, removed && removed.Review_Status === 'Approved' ? -1 : 0);
+renderShortlistDetailView(); showToast('KOL removed from shortlist.');
+} catch (error) { showToast(error.message || String(error), true); }
+}
+function adjustShortlistSummary(id, totalDelta, approvedDelta) {
+const shortlist = state.shortlists.find(function (item) { return item.Shortlist_ID === id; });
+if (!shortlist) return;
+shortlist.KOL_Count = Math.max(0, Number(shortlist.KOL_Count || 0) + Number(totalDelta || 0));
+shortlist.Approved_Count = Math.max(0, Number(shortlist.Approved_Count || 0) + Number(approvedDelta || 0));
+}
+function patchWorkspaceRow(collection, idField, updated) {
+const rows = state.campaignDetail[collection] || [];
+const index = rows.findIndex(function (row) { return row[idField] === updated[idField]; });
+if (index >= 0) rows[index] = Object.assign({}, rows[index], updated);
+else rows.unshift(updated);
+}
+function enrichWorkspaceRecord(record) {
+const kol = state.campaignDetail.campaignKols.find(function (row) { return row.Campaign_KOL_ID === record.Campaign_KOL_ID; }) || {};
+return Object.assign({}, record, { Username: kol.Username || '', Display_Name: kol.Display_Name || '', Account_ID: record.Account_ID || kol.Account_ID || '' });
+}
+function syncCampaignKolFromRecord(record, field, explicitValue) {
+const kol = state.campaignDetail.campaignKols.find(function (row) { return row.Campaign_KOL_ID === record.Campaign_KOL_ID; });
+if (!kol) return;
+kol[field] = explicitValue === undefined ? record[field] : explicitValue;
+if (record.Posting_Date) kol.Posting_Date = record.Posting_Date;
+if (record.Post_URL) kol.Post_URL = record.Post_URL;
+}
+function recalculateWorkspaceMetrics() {
+const data = state.campaignDetail;
+const kols = data.campaignKols || [];
+const deliverables = data.deliverables || [];
+const payments = data.payments || [];
+const today = new Date(); today.setHours(0, 0, 0, 0);
+const market = String(data.campaign && data.campaign.Market || '');
+const committed = kols.filter(function (row) { return row.Booking_Status === 'Confirmed'; }).reduce(function (sum, row) { return sum + campaignKolBudgetAmountClient_(row, market); }, 0);
+const pipelineTotal = kols.reduce(function (sum, row) { return sum + campaignKolBudgetAmountClient_(row, market); }, 0);
+const paymentMap = {}; payments.forEach(function (row) { paymentMap[row.Campaign_KOL_ID] = row.Payment_Status; });
+Object.assign(data.metrics, {
+totalKols: kols.length,
+confirmed: kols.filter(function (row) { return row.Booking_Status === 'Confirmed'; }).length,
+committed: committed,
+pipelineTotal: pipelineTotal,
+remaining: Math.max(0, numericValue(data.campaign.Budget) - committed),
+draftsInReview: deliverables.filter(function (row) { return row.Content_Status === 'Need edit'; }).length,
+postsLive: deliverables.filter(function (row) { return row.Content_Status === 'Posted'; }).length,
+missingContracts: kols.filter(function (row) { return row.Booking_Status === 'Confirmed' && row.Contract_Status !== 'Signed'; }).length,
+overdueDeliverables: deliverables.filter(function (row) { const due = safeDate(row.Draft_Due || row.Posting_Date); return due && due < today && row.Content_Status !== 'Posted'; }).length,
+pendingPayments: kols.filter(function (row) { const status = paymentMap[row.Campaign_KOL_ID] || row.Payment_Status || 'Not started'; return row.Booking_Status === 'Confirmed' && !['Paid','Cancelled'].includes(status); }).length,
+});
+}
+function numericValue(value) {
+return Number(stripNumberFormatting(value)) || 0;
+}
+/**
+ * Mirrors campaignKolNetAmount_ in Code.gs: Final_Fee counts when it was
+ * entered, not when it is truthy. Using `||` treated a barter deal's 0 as
+ * missing and fell back to the quoted price, so the Net input, the Committed and
+ * Remaining budget figures and the net sort all showed an amount the server
+ * never counted.
+ */
+/**
+ * Anything edited inside a campaign can change what the Operations screens show,
+ * but those screens only fetch when their cache is falsy. Without this, setting a
+ * payment to Paid inside a campaign left Operations → Payments showing the old
+ * status indefinitely — the background poller had no branch for those views
+ * either, so nothing healed it short of a full reload.
+ */
+function invalidateOperationsCaches_() {
+if (state.operations) {
+state.operations.contractData = null;
+state.operations.contracts = null;
+state.operations.payments = null;
+state.operations.history = null;
+}
+if (state.contractHub) state.contractHub.data = null;
+}
+function campaignKolNetAmountClient_(row) {
+row = row || {};
+const raw = row.Final_Fee;
+const hasFinal = !(raw === null || raw === undefined || String(raw).trim() === '');
+return Math.max(0, numericValue(hasFinal ? raw : row.Quoted_Fee));
+}
+function campaignKolGrossAmountClient_(row) {
+const netAmount = campaignKolNetAmountClient_(row);
+const baseAmount = netAmount + Math.max(0, numericValue(row.Code_Ad_Fee));
+// Công thức thuế nằm ở calculateContractTaxClient_ (Scripts.html), phản chiếu
+// calculateContractTax_ trong Code.gs. Trước đây `>= 5000000 ? /0.9` được viết lại
+// ở ĐÂY, trong CampaignWorkspace.html, và trong Code.gs — ba bản sao không có
+// nguồn chung, nên đổi mô hình thuế là phải nhớ cả ba chỗ.
+return Math.round(baseAmount) + calculateContractTaxClient_(baseAmount);
+}
+function campaignKolBudgetAmountClient_(row, market) {
+if (String(market || row.Market || '') === 'VN') return campaignKolGrossAmountClient_(row);
+return campaignKolNetAmountClient_(row) + numericValue(row.Tax) + numericValue(row.Service_Fee);
+}
+function patchCampaignSummary(updated) {
+const index = state.campaigns.findIndex(function (campaign) { return campaign.Campaign_ID === updated.Campaign_ID; });
+if (index >= 0) state.campaigns[index] = Object.assign({}, state.campaigns[index], updated);
+}
+let campaignSummaryRefreshTimer_ = 0;
+function refreshCampaignSummariesInBackground() {
+clearTimeout(campaignSummaryRefreshTimer_);
+campaignSummaryRefreshTimer_ = setTimeout(function () {
+Promise.all([server('getDashboardData'), server('listCampaigns', {})]).then(function (results) {
+state.dashboard = results[0];
+state.campaigns = results[1] || state.campaigns;
+}).catch(function () {});
+}, 900);
+}
+runBulkBookingUpdate = async function (button) {
+if (!state.workspace.selectedKols.size) return;
+const select = document.getElementById('bulk-booking-value');
+const field = select.dataset.field || 'Booking_Status';
+const ids = Array.from(state.workspace.selectedKols);
+setActionBusy(button, true, 'Updating…');
+try {
+const result = await server('bulkUpdateCampaignKols', { ids: ids, field: field, value: select.value });
+// This override used to just assign the new value locally and throw the response
+// away, so the Gross / After_PIT_Fee the server recomputed stayed stale and the
+// deliverables auto-created when a KOL flips to Confirmed never appeared.
+const records = result.records || {};
+if (Object.keys(records).length) {
+Object.keys(records).forEach(function (rowId) {
+patchWorkspaceRow('campaignKols', 'Campaign_KOL_ID', records[rowId]);
+});
+} else {
+state.campaignDetail.campaignKols.forEach(function (row) { if (ids.includes(row.Campaign_KOL_ID)) row[field] = select.value; });
+}
+(result.deliverables || []).forEach(function (record) {
+patchWorkspaceRow('deliverables', 'Deliverable_ID', enrichWorkspaceRecord(record));
+});
+state.workspace.selectedKols.clear();
+recalculateWorkspaceMetrics();
+invalidateOperationsCaches_();
+applyCampaignWorkspaceUpdate_(state.campaignDetail);
+refreshCampaignSummariesInBackground();
+showToast(result.updated + ' KOL(s) updated instantly.');
+} catch (error) { showToast(error.message || String(error), true); setActionBusy(button, false); }
+};
+</script>

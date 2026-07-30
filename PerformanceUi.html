@@ -1,0 +1,442 @@
+<script>
+'use strict';
+/* ============================================================================
+ * KOL Campaign Manager v1.11.0 — PerformanceUi.html
+ * ----------------------------------------------------------------------------
+ * PASTE AS: new Apps Script HTML file named  PerformanceUi.html
+ * Include in Index.html AFTER AdminUi (see 9_Index.html.txt).
+ *
+ * PHASE 3 UI:
+ *   - Performance screen gains an "Automation" panel: team API sync, schedule
+ *     control, freshness coverage and the last runs.
+ *   - Fetch / Scan switch to the multi-platform V2 endpoints, so the buttons
+ *     now work for Instagram and Threads too (best effort) instead of TikTok only.
+ *   - The "Scan TikTok" button becomes "Scan now" with a platform picker.
+ * ========================================================================== */
+
+state.perfAuto = { status: null, loading: false };
+
+const renderPerformanceV1110 = renderPerformance;
+const handleMainClickV1110Perf = handleMainClick;
+const handleModalSubmitV1110Perf = handleModalSubmit;
+
+function perfCanManageAutomation() {
+  return ['Admin', 'Booking'].includes(state.user.Role);
+}
+
+/* ----------------------------------------------------------------------------
+ * Performance screen — reuse the core render, then append the automation panel
+ * -------------------------------------------------------------------------- */
+
+renderPerformance = async function () {
+  await renderPerformanceV1110();
+  if (state.view !== 'performance' || !perfCanManageAutomation()) return;
+
+  // Pulling from the team tracker is how numbers actually arrive now, but the button
+  // used to live only in the Automation card, which this function appends AFTER the
+  // full performance table — several screens down. It was effectively invisible, so
+  // it moves into the page header and the app's own scraper becomes the fallback.
+  const headingActions = document.querySelector('.heading-actions');
+  if (headingActions && !headingActions.querySelector('[data-action="perf-team-sync"]')) {
+    headingActions.insertAdjacentHTML('afterbegin',
+      '<button class="primary-button" data-action="perf-team-sync">Sync from team API</button>');
+  }
+
+  const holder = document.createElement('div');
+  holder.id = 'perf-auto-panel';
+  holder.innerHTML = '<section class="card perf-auto-card"><p class="eyebrow">Automation</p>' +
+    '<h2>Performance sync</h2><div class="skeleton"></div></section>';
+  main.appendChild(holder);
+
+  try {
+    if (!state.perfAuto.status) {
+      state.perfAuto.status = await server('getPerformanceAutomationStatus');
+    }
+    if (state.view !== 'performance') return;
+    const target = document.getElementById('perf-auto-panel');
+    if (target) target.innerHTML = perfAutomationPanel(state.perfAuto.status);
+  } catch (error) {
+    const target = document.getElementById('perf-auto-panel');
+    if (target) {
+      target.innerHTML = '<section class="card perf-auto-card"><p class="eyebrow">Automation</p>' +
+        '<h2>Performance sync</h2><p class="admin-error">' + escapeHtml(error.message) + '</p></section>';
+    }
+  }
+};
+
+function perfAutomationPanel(status) {
+  const coverage = status.coverage || {};
+  const settings = status.settings || {};
+  const runs = status.runs || [];
+
+  const scheduleBadge = status.scheduled
+    ? '<span class="status status-mint">Schedule active</span>'
+    : '<span class="status status-neutral">Not scheduled</span>';
+
+  const teamApiBadge = status.teamApiConfigured
+    ? '<span class="status status-mint">Team API ready</span>'
+    : '<span class="status status-amber">Team API not configured</span>';
+
+  const controls = status.canManage
+    ? '<div class="modal-actions" style="margin-top:16px;justify-content:flex-start">' +
+        (status.scheduled
+          ? '<button class="ghost-button" data-action="perf-schedule-off">Turn off schedule</button>'
+          : '') +
+        '<button class="' + (status.scheduled ? 'ghost-button' : 'primary-button') +
+          '" data-action="perf-schedule-on">' +
+          (status.scheduled ? 'Change interval' : 'Turn on schedule') + '</button>' +
+        // Sync lives in the page header now — having it here as well put two
+        // identical buttons on one screen. What belongs here is the fallback pair:
+        // both are superseded by the team API for every platform it covers, and the
+        // app's own scraper only earns its place for posts the tracker will not
+        // take, such as TikTok photo slideshows.
+        '<button class="ghost-button" data-action="perf-scan-open">Scan now (fallback)</button>' +
+        '<button class="ghost-button" data-action="import-performance-csv">⇧ Import CSV</button>' +
+      '</div>'
+    : '<p class="admin-hint">Only an Admin can change automation settings.</p>';
+
+  const platformRows = Object.keys(status.platformCoverage || {}).sort().map(function (platform) {
+    const item = status.platformCoverage[platform];
+    const auto = item.automatable;
+    return '<div class="settings-row"><div><strong>' + escapeHtml(platform) + '</strong><small>' +
+      item.total + ' live post(s)</small></div><div class="settings-row-actions">' +
+      (auto === item.total
+        ? '<span class="status status-mint">Auto-fetch</span>'
+        : auto
+          ? '<span class="status status-amber">' + auto + ' of ' + item.total + ' auto</span>'
+          : '<span class="status status-neutral">Post Tracker only</span>') +
+      '</div></div>';
+  }).join('');
+
+  const runRows = runs.length
+    ? '<div class="auto-log">' + runs.map(function (run) {
+        const failed = Number(run.Failed || 0);
+        return '<div><span>' + escapeHtml(workspaceDateTimeClient(run.Finished_At) || '—') + ' · ' +
+          escapeHtml(run.Trigger || '—') + '</span><span>' +
+          '<strong>' + Number(run.Updated || 0) + '</strong> updated' +
+          (failed ? ' · <strong style="color:#bb4c58">' + failed + '</strong> failed' : '') +
+          '</span></div>';
+      }).join('') + '</div>'
+    : '<p class="admin-hint">No sync runs recorded yet.</p>';
+
+  return '<section class="card perf-auto-card">' +
+    '<div class="card-head"><div><p class="eyebrow">Automation</p><h2>Performance sync</h2></div>' +
+      '<div class="settings-row-actions">' + teamApiBadge + scheduleBadge + '</div></div>' +
+
+    '<div class="auto-status">' +
+      '<div><small>Live posts</small><strong>' + formatNumber(coverage.total || 0) + '</strong></div>' +
+      '<div><small>Fresh (&lt;24h)</small><strong>' + formatNumber(coverage.fresh || 0) + '</strong></div>' +
+      '<div><small>Stale</small><strong>' + formatNumber(coverage.stale || 0) + '</strong></div>' +
+      '<div><small>Never synced</small><strong>' + formatNumber(coverage.never || 0) + '</strong></div>' +
+    '</div>' +
+
+    '<p class="admin-hint">The scheduled run refreshes up to ' + Number(settings.batchSize || 40) +
+      ' post(s) per execution, skips anything synced in the last ' +
+      Number(settings.minRefreshHours || 8) + 'h, and ignores posts older than ' +
+      Number(settings.activeWindowDays || 45) + ' days. Stalest data goes first.</p>' +
+
+    platformRows + controls +
+
+    '<h2 style="margin-top:16px;font-size:13px">Recent runs</h2>' + runRows +
+  '</section>';
+}
+
+/* ----------------------------------------------------------------------------
+ * Modals
+ * -------------------------------------------------------------------------- */
+
+function openScanModal() {
+  const status = state.perfAuto.status || {};
+  const supported = status.supportedPlatforms || ['tiktok', 'instagram', 'threads'];
+  const inCampaign = state.view === 'campaigns' && state.campaignDetail;
+
+  openModal(
+    '<form id="perf-scan-form" class="modal-card workspace-modal">' +
+      '<div class="modal-heading"><div><p class="eyebrow">Performance</p><h2>Scan post metrics</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<div class="modal-note"><span>i</span><p>TikTok returns full metrics including views. ' +
+        'Instagram and Threads only publish likes and comments publicly, and Meta blocks Google ' +
+        'servers frequently — when a platform fails, use <strong>Sync from team API</strong> ' +
+        'instead, which also covers X and Facebook. Stalest posts are scanned first.</p></div>' +
+      '<fieldset class="platform-fieldset"><legend>Platforms</legend><div class="platform-options">' +
+        supported.map(function (platform) {
+          return '<label class="platform-choice"><input type="checkbox" name="platforms" value="' +
+            escapeAttr(platform) + '" checked><span>' +
+            escapeHtml(platform.charAt(0).toUpperCase() + platform.slice(1)) + '</span></label>';
+        }).join('') +
+      '</div></fieldset>' +
+      '<div class="form-grid">' +
+        '<label>Batch size<select name="limit">' + optionList([10, 25, 40, 60], 25) + '</select></label>' +
+        '<label>Scope<select name="scope">' +
+          (inCampaign ? '<option value="campaign">This campaign only</option>' : '') +
+          '<option value="all"' + (inCampaign ? '' : ' selected') + '>Everything I can see</option>' +
+        '</select></label>' +
+      '</div>' +
+      '<p class="admin-error is-hidden" id="perf-scan-error"></p>' +
+      workspaceModalActions('Start scan') +
+    '</form>'
+  );
+}
+
+function openScheduleModal() {
+  const status = state.perfAuto.status || {};
+  openModal(
+    '<form id="perf-schedule-form" class="modal-card workspace-modal">' +
+      '<div class="modal-heading"><div><p class="eyebrow">Automation</p><h2>Scheduled refresh</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<div class="modal-note"><span>i</span><p>A time-driven trigger runs ' +
+        '<code>runScheduledPerformanceRefresh</code> and keeps live post metrics current without ' +
+        'anyone clicking anything. It runs as you, so it uses your Google quota. If a run mostly ' +
+        'fails, every active Admin gets one email.</p></div>' +
+      '<label>Run every<select name="everyHours">' +
+        optionList([1, 2, 4, 6, 8, 12], 6) + '</select></label>' +
+      '<p class="admin-hint">6 hours suits most campaigns: metrics move fast in the first two days ' +
+        'and barely move after a week. Shorter intervals burn UrlFetch quota for very little gain.</p>' +
+      (status.scheduled ? '<p class="admin-hint">A schedule is already installed — saving replaces it.</p>' : '') +
+      '<p class="admin-error is-hidden" id="perf-schedule-error"></p>' +
+      workspaceModalActions('Save schedule') +
+    '</form>'
+  );
+}
+
+function openTeamApiSyncModal(result) {
+  const status = state.perfAuto.status || {};
+  const untracked = (result && result.untracked) || [];
+  const summary = result
+    ? '<div class="auto-status" style="margin-bottom:14px">' +
+        '<div><small>Updated</small><strong>' + formatNumber(result.matched || 0) + '</strong></div>' +
+        '<div><small>Tracked posts</small><strong>' + formatNumber(result.trackedPosts || 0) + '</strong></div>' +
+        '<div><small>Scrape failed</small><strong>' + formatNumber(result.scrapeFailed || 0) + '</strong></div>' +
+        '<div><small>Not in tracker</small><strong>' + formatNumber(untracked.length) + '</strong></div>' +
+      '</div>'
+    : '';
+  // The worklist is the point of this panel: a Post_URL the tracker has never
+  // seen will never get numbers, and nothing else in the app would say so.
+  const worklist = result
+    ? (untracked.length
+        ? '<label>Not in the tracker yet — paste these into the tracker web UI' +
+            '<textarea id="perf-untracked" rows="6" readonly>' +
+            escapeHtml(untracked.map(function (item) { return item.url; }).join('\n')) +
+            '</textarea></label>' +
+          '<div class="modal-actions" style="justify-content:flex-start;margin-top:0">' +
+            '<button type="button" class="ghost-button" data-action="perf-copy-untracked">Copy all ' +
+            formatNumber(untracked.length) + ' link(s)</button>' +
+            '<button type="button" class="primary-button" data-action="perf-push-untracked">Push ' +
+            formatNumber(untracked.length) + ' to tracker</button></div>' +
+          '<p class="admin-hint">Pushing registers them in the tracker and queues a scrape ' +
+            'immediately — one tracker campaign per campaign here. Numbers land in about ' +
+            '20 minutes, then Sync again.</p>'
+        : '<p class="admin-hint">Every post URL in this workspace is already in the tracker.</p>')
+    : '';
+  openModal(
+    '<form id="perf-team-sync-form" class="modal-card workspace-modal">' +
+      '<div class="modal-heading"><div><p class="eyebrow">Automation</p><h2>Sync from team API</h2></div>' +
+        '<button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+      '<div class="modal-note"><span>i</span><p>Pulls the latest numbers from the team Post Tracker. ' +
+        'The API is read-only, so a post has to be added in the tracker web UI first — numbers appear ' +
+        'about <strong>20 minutes</strong> later, or straight away if you trigger a scrape there. ' +
+        'Metrics a platform does not publish are left untouched rather than written as zero.</p></div>' +
+      // A result in hand proves the API answered, so the warning is only for the
+      // first open. Without the `!result` guard it reappeared after every sync,
+      // because runTeamApiSync cleared the cached status before reopening.
+      (result || status.teamApiConfigured
+        ? ''
+        : '<p class="admin-error">Not configured yet. The CONFIG sheet needs a row with ' +
+          'Key <code>PERF_API_BASE_URL</code> and one with Key <code>PERF_API_KEY</code>. ' +
+          'Syncing anyway is safe — this notice can lag behind the sheet.</p>') +
+      summary + worklist +
+      '<p class="admin-error is-hidden" id="perf-team-sync-error"></p>' +
+      '<div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Close</button>' +
+        '<button type="submit" class="primary-button">' + (result ? 'Sync again' : 'Sync now') + '</button></div>' +
+    '</form>'
+  );
+}
+
+/* ----------------------------------------------------------------------------
+ * Actions
+ * -------------------------------------------------------------------------- */
+
+async function runScanNow(form) {
+  const values = formToObject(form);
+  const platforms = String(values.platforms || '').split(',').map(function (item) {
+    return item.trim();
+  }).filter(Boolean);
+  if (!platforms.length) {
+    const node = document.getElementById('perf-scan-error');
+    if (node) {
+      node.textContent = 'Select at least one platform.';
+      node.classList.remove('is-hidden');
+    }
+    return;
+  }
+
+  const payload = { platforms: platforms, limit: Number(values.limit || 25) };
+  if (values.scope === 'campaign' && state.campaignDetail) {
+    payload.Campaign_ID = state.campaignDetail.campaign.Campaign_ID;
+  }
+
+  setFormBusy(form, true);
+  try {
+    const result = await server('scanPerformanceAll', payload);
+    closeModal();
+
+    state.operations.performance = null;
+    state.perfAuto.status = null;
+    if (state.view === 'performance') await renderPerformance();
+    else if (typeof refreshCampaignWorkspace === 'function') await refreshCampaignWorkspace();
+
+    const parts = ['Updated ' + result.updated + ' of ' + result.scanned + ' post(s).'];
+    if (result.partial) parts.push(result.partial + ' without view counts (platform does not expose them).');
+    if (result.failed && result.failed.length) {
+      parts.push(result.failed.length + ' failed — try Post Tracker for those.');
+    }
+    showToast(parts.join(' '), !result.updated);
+  } catch (error) {
+    const node = document.getElementById('perf-scan-error');
+    if (node) {
+      node.textContent = error.message;
+      node.classList.remove('is-hidden');
+    } else {
+      showToast(error.message, true);
+    }
+    setFormBusy(form, false);
+  }
+}
+
+async function runSaveSchedule(form) {
+  const values = formToObject(form);
+  setFormBusy(form, true);
+  try {
+    const result = await server('installPerformanceAutoTrigger', { everyHours: Number(values.everyHours || 6) });
+    closeModal();
+    state.perfAuto.status = null;
+    await renderPerformance();
+    showToast('Automatic refresh scheduled every ' + result.everyHours + 'h.');
+  } catch (error) {
+    const node = document.getElementById('perf-schedule-error');
+    if (node) {
+      node.textContent = error.message;
+      node.classList.remove('is-hidden');
+    } else {
+      showToast(error.message, true);
+    }
+    setFormBusy(form, false);
+  }
+}
+
+async function runScheduleOff(button) {
+  button.disabled = true;
+  try {
+    await server('disablePerformanceAutoTrigger');
+    state.perfAuto.status = null;
+    await renderPerformance();
+    showToast('Scheduled refresh turned off.');
+  } catch (error) {
+    showToast(error.message, true);
+    button.disabled = false;
+  }
+}
+
+async function runTeamApiSync(form) {
+  setFormBusy(form, true);
+  try {
+    const result = await server('syncPerformanceFromTeamApi', {});
+    if (state.operations) state.operations.performance = null;
+    // Re-fetch rather than just nulling: the modal reads status straight away.
+    try {
+      state.perfAuto.status = await server('getPerformanceAutomationStatus');
+    } catch (statusError) {
+      state.perfAuto.status = null;
+    }
+    openTeamApiSyncModal(result);
+    showToast(result.matched + ' deliverable(s) updated from the team tracker.');
+  } catch (error) {
+    setFormBusy(form, false);
+    const node = document.getElementById('perf-team-sync-error');
+    if (node) {
+      node.textContent = error.message;
+      node.classList.remove('is-hidden');
+    } else {
+      showToast(error.message, true);
+    }
+  }
+}
+
+async function runPushUntracked(button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Pushing…';
+  try {
+    const result = await server('pushPostsToTeamTracker', {});
+    const failed = (result.campaigns || []).filter(function (item) { return !item.ok; });
+    if (failed.length) {
+      // Partial success is the normal failure here — one campaign can be rejected
+      // while the rest go through, so name the ones that did not.
+      showToast(result.pushed + ' pushed, ' + failed.length + ' campaign(s) failed: ' +
+        failed.map(function (item) { return item.campaign + ' — ' + item.error; }).join(' · '), true);
+    } else if (!result.pushed) {
+      showToast(result.message || 'Nothing to push.');
+    } else {
+      showToast(result.pushed + ' link(s) pushed across ' + result.campaigns.length +
+        ' tracker campaign(s). Scrape queued — sync again in ~20 minutes.');
+    }
+    button.textContent = result.pushed ? 'Pushed ' + result.pushed : original;
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = original;
+    const node = document.getElementById('perf-team-sync-error');
+    if (node) {
+      node.textContent = error.message;
+      node.classList.remove('is-hidden');
+    } else {
+      showToast(error.message, true);
+    }
+  }
+}
+
+function runCopyUntracked(button) {
+  const area = document.getElementById('perf-untracked');
+  if (!area) return;
+  area.select();
+  try {
+    document.execCommand('copy');
+    button.textContent = 'Copied';
+  } catch (error) {
+    showToast('Press ⌘C / Ctrl+C to copy the selected links.');
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * Wiring
+ * -------------------------------------------------------------------------- */
+
+handleMainClick = function (event) {
+  const node = event.target.closest('[data-action]');
+  if (!node) return handleMainClickV1110Perf(event);
+  const action = node.dataset.action;
+
+  if (action === 'perf-scan-open') return openScanModal();
+  if (action === 'perf-schedule-on') return openScheduleModal();
+  if (action === 'perf-schedule-off') return runScheduleOff(node);
+  if (action === 'perf-team-sync') return openTeamApiSyncModal(null);
+
+  return handleMainClickV1110Perf(event);
+};
+
+modalRoot.addEventListener('click', function (event) {
+  const copyNode = event.target.closest('[data-action="perf-copy-untracked"]');
+  if (copyNode) return runCopyUntracked(copyNode);
+  const pushNode = event.target.closest('[data-action="perf-push-untracked"]');
+  if (pushNode) return runPushUntracked(pushNode);
+});
+
+handleModalSubmit = async function (event) {
+  const form = event.target;
+  const localForms = ['perf-scan-form', 'perf-schedule-form', 'perf-team-sync-form'];
+  if (localForms.indexOf(form.id) === -1) return handleModalSubmitV1110Perf(event);
+  event.preventDefault();
+  if (form.id === 'perf-scan-form') return runScanNow(form);
+  if (form.id === 'perf-schedule-form') return runSaveSchedule(form);
+  return runTeamApiSync(form);
+};
+</script>

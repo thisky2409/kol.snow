@@ -1,0 +1,284 @@
+<style>
+.workspace-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.workspace-section-head h2 { margin-top: 3px; font-size: var(--fs-xl); }
+.workspace-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.workspace-table { overflow: visible; }
+.workspace-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) 180px 210px;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+}
+.workspace-toolbar > div { display: flex; align-items: baseline; gap: 4px; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.workspace-toolbar > div strong { color: var(--ink); font-size: var(--fs-xl); }
+.workspace-toolbar input,
+.workspace-toolbar select,
+.bulk-bar select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  outline: 0;
+  background: #fafbfc;
+  padding: 0 10px;
+  color: var(--ink);
+  font-size: var(--fs-xs);
+}
+.campaign-sort-control {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  background: #fafbfc;
+  padding-left: 9px;
+  color: var(--muted);
+  font-size: var(--fs-micro);
+  font-weight: 750;
+  white-space: nowrap;
+}
+.campaign-sort-control span { flex: 0 0 auto; }
+.campaign-sort-control select {
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  padding: 0 9px 0 7px;
+  color: var(--ink);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  outline: 0;
+}
+.campaign-content-actions { align-items: center; }
+.campaign-content-actions .campaign-sort-control { min-width: 210px; }
+.workspace-toolbar input:focus,
+.workspace-toolbar select:focus,
+.bulk-bar select:focus { border-color: #8aa9ed; background: #fff; box-shadow: 0 0 0 3px rgba(39,100,231,.08); }
+/* DONE on 2026-07-30 (F23), exactly as the previous note prescribed.
+   History: a `position: fixed` version was tried on 2026-07-28 and did not render
+   at all, because .bulk-bar was emitted deep inside .table-card, which is
+   `overflow: hidden`. The note concluded that making it float means rendering it
+   into its own top-level host the way updateSelectionBar does — not restyling it
+   in place. That is what now happens: updateCampaignBulkBar_ writes into
+   #bulk-bar-host, a sibling of <main> in Index.html.
+   Two consequences to keep in mind when editing:
+     1. the host is OUTSIDE #main, and the click/change delegation is bound to
+        #main only, so the bar's controls get handlers attached directly;
+     2. .bulk-bar keeps its in-flow styling for any other use, and the fixed
+        positioning lives on .bulk-bar-host below. */
+.bulk-bar {
+  display: grid;
+  grid-template-columns: 1fr 190px auto;
+  align-items: center;
+  gap: 9px;
+  border-bottom: 1px solid #dce7fb;
+  background: #f4f7ff;
+  padding: 9px 14px;
+  color: var(--body-sub);
+  font-size: var(--fs-xs);
+}
+.bulk-bar-host {
+  position: fixed;
+  z-index: 40;
+  right: 28px;
+  bottom: 22px;
+  left: 270px;
+  width: max-content;
+  max-width: calc(100vw - 300px);
+  margin: auto;
+}
+.bulk-bar-host .bulk-bar {
+  border: 1px solid #c9d7f4;
+  border-radius: 13px;
+  box-shadow: 0 18px 40px rgba(15, 26, 50, 0.22);
+  padding: 10px 14px;
+}
+@media (max-width: 920px) {
+  .bulk-bar-host { left: 20px; max-width: calc(100vw - 40px); }
+}
+@media (max-width: 680px) {
+  .bulk-bar-host { right: 12px; bottom: 12px; left: 12px; width: auto; max-width: none; }
+}
+.bulk-bar strong { color: var(--blue); }
+.campaign-kol-scroll {
+  position: relative;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
+}
+.campaign-sticky-header {
+  position: sticky;
+  top: 66px;
+  z-index: 18;
+  height: 40px;
+  margin-bottom: -40px;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity .12s ease;
+}
+.campaign-sticky-header.is-active { opacity: 1; visibility: visible; }
+.campaign-sticky-header-viewport {
+  width: 100%;
+  height: 40px;
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+  background: #f8f9fc;
+  box-shadow: inset 0 -1px 0 #e4e9f1, 0 7px 16px rgba(31,48,82,.08);
+  scrollbar-width: none;
+}
+.campaign-sticky-header-viewport::-webkit-scrollbar { display: none; }
+.campaign-sticky-header-table {
+  table-layout: fixed;
+  margin: 0;
+  border-collapse: collapse;
+  /* The bar itself stays pointer-events: none so it never blocks the page, but the
+     clone has to catch clicks. Without this, a click on the sticky select-all fell
+     straight through the bar and toggled whichever row happened to sit underneath. */
+  pointer-events: auto;
+}
+.campaign-sticky-header-table thead th {
+  height: 40px;
+  background: #f8f9fc;
+}
+.campaign-kol-table {
+  table-layout: fixed;
+  border-spacing: 0;
+}
+.campaign-kol-table td { vertical-align: middle; }
+.campaign-kol-table th,
+.campaign-kol-table td {
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden !important;
+}
+.campaign-kol-table td:last-child { overflow: hidden !important; }
+.campaign-kol-table .campaign-inline-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+.campaign-kol-table .campaign-extra-input,
+.campaign-kol-table .campaign-extra-text,
+.campaign-kol-table .campaign-fee-editor input {
+  display: block;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+.campaign-kol-table .campaign-fee-editor {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+.campaign-kol-table .campaign-money-cell {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.campaign-kol-table .campaign-money-cell strong,
+/* `display: block` bien mot <td> thanh hop block thuong, tuc no KHONG con la o
+   cua bang nua: no tut khoi dong va cac o phia sau bi day lech - dung trieu
+   chung "PIC bi lech khoi dong". Nguoi viet truoc co le tuong phai co
+   display:block thi text-overflow moi chay. Khong can: o bang cung la mot
+   block container, va bang nay da co table-layout: fixed + colgroup (be rong
+   co dinh) + overflow: hidden tren moi th/td, du dieu kien cho ellipsis. */
+.campaign-kol-table td.campaign-col-pic {
+  display: table-cell;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.campaign-kol-table th.campaign-col-pic {
+  display: table-cell;
+  vertical-align: middle;
+}
+.campaign-kol-table .status,
+.campaign-kol-table .status-select {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.content-workspace-table .data-table th:nth-child(1),
+.content-workspace-table .data-table td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: inherit;
+}
+.content-workspace-table .data-table th:nth-child(2),
+.content-workspace-table .data-table td:nth-child(2) {
+  position: sticky;
+  left: 170px;
+  z-index: 2;
+  border-right: 1px solid #eef0f4;
+  background: inherit;
+}
+.content-workspace-table .data-table thead th:nth-child(1),
+.content-workspace-table .data-table thead th:nth-child(2) {
+  z-index: 4;
+  background: #f8f9fc;
+}
+.cell-sub { display: block; margin-top: 3px; color: var(--sub-quiet); font-size: var(--fs-micro); font-weight: 500; }
+.data-table td a { display: inline-block; margin-top: 4px; color: var(--blue); font-size: var(--fs-micro); font-weight: 750; text-decoration: none; }
+.inline-empty { display: grid; min-height: 120px; place-items: center; color: var(--sub-quiet); font-size: var(--fs-sm); }
+.workflow-alerts { padding: var(--card-pad); }
+.workflow-alert-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.workflow-alert-grid button {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 3px 10px;
+  border: 1px solid #e7ebf2;
+  border-radius: 11px;
+  background: #fafbfe;
+  padding: 14px;
+  text-align: left;
+}
+.workflow-alert-grid button:hover { border-color: #c9d7f4; background: #f5f8ff; }
+.workflow-alert-grid strong { grid-row: 1 / span 2; font-size: var(--fs-3xl); letter-spacing: -.04em; }
+.workflow-alert-grid span { color: var(--ink-mid); font-size: var(--fs-xs); font-weight: 750; }
+.workflow-alert-grid small { color: var(--label); font-size: var(--fs-micro); }
+.alert-amber { color: #d38a16; }
+.alert-danger { color: #d45160; }
+.alert-blue { color: var(--blue); }
+.workspace-modal { width: min(680px, 100%); }
+.fee-helper { margin: 2px 0 14px; padding: 10px 12px; border: 1px solid #e7ebf3; border-radius: 10px; background: #f8fafc; }
+.fee-helper-actions { display: flex; align-items: center; gap: 8px; font-size: var(--fs-md); color: var(--text); margin-bottom: 8px; }
+.fee-quick-btn { padding: 4px 10px; font-size: var(--fs-sm); }
+.fee-total-line { font-size: var(--fs-md); color: var(--ink-strong); }
+.fee-total-line strong { color: #17493c; }
+.workspace-modal .performance-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.workspace-modal fieldset { margin-top: 15px; }
+.campaign-hero-actions .link-button { min-height: 36px; padding: 0 14px; }
+
+@media (max-width: 920px) {
+  .workspace-toolbar { grid-template-columns: 1fr 1fr; }
+  .workspace-toolbar > div { grid-column: 1 / -1; }
+  .workflow-alert-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 680px) {
+  .campaign-sticky-header { top: 58px; }
+  .workspace-section-head { align-items: stretch; flex-direction: column; }
+  .workspace-actions > button { flex: 1; }
+  .campaign-content-actions .campaign-sort-control { width: 100%; }
+  .workspace-toolbar { grid-template-columns: 1fr; }
+  .workspace-toolbar > div { grid-column: auto; }
+  .bulk-bar { grid-template-columns: 1fr; }
+  .workspace-modal .performance-grid { grid-template-columns: 1fr 1fr; }
+}
+</style>
