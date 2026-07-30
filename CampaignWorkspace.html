@@ -1,0 +1,1139 @@
+<script>
+'use strict';
+/* Campaign Workspace v1.5.0 extends the stable core UI. */
+state.workspace = {
+selectedKols: new Set(),
+kolQuery: '',
+bookingFilter: 'All',
+kolSort: 'creator-asc',
+contentSort: 'schedule-asc',
+returnCampaignId: '',
+preferredCampaignId: '',
+};
+const legacyHandleMainClickV131 = handleMainClick;
+const legacyHandleMainInputV131 = handleMainInput;
+const legacyHandleMainChangeV131 = handleMainChange;
+const legacyHandleModalSubmitV131 = handleModalSubmit;
+const legacyRenderCampaignTabV131 = renderCampaignTab;
+openCampaign = async function (id) {
+state.view = 'campaigns';
+state.campaignDetail = null;
+state.campaignTab = 'Overview';
+state.workspace.selectedKols.clear();
+state.workspace.kolQuery = '';
+state.workspace.bookingFilter = 'All';
+document.querySelectorAll('.nav-item').forEach(function (item) {
+item.classList.toggle('active', item.dataset.view === 'campaigns');
+});
+main.innerHTML = '<div class="skeleton"></div>';
+try {
+state.campaignDetail = await server('getCampaignWorkspace', id);
+persistUiState_();
+renderCampaignDetail();
+window.scrollTo({ top: 0, behavior: 'smooth' });
+} catch (error) {
+showPageError(error);
+}
+};
+renderCampaignDetail = function () {
+const data = state.campaignDetail;
+if (!data) return;
+const campaign = data.campaign;
+const canManage = canManageCampaignWorkspace();
+const canEditContent = canManageContentWorkspace();
+const operationTabs = canManage ? (campaign.Market === 'VN' ? ['Contracts', 'Payments'] : ['Payments']) : [];
+const tabs = ['Overview', 'KOLs', 'Content', 'Performance'].concat(operationTabs);
+const briefUrl = safeWorkspaceUrl(campaign.Brief_URL);
+const briefAction = briefUrl
+? '<a class="ghost-button link-button" href="' + escapeAttr(briefUrl) + '" target="_blank" rel="noopener">Open brief ↗</a>'
+: '<button class="ghost-button" type="button" disabled>No brief</button>';
+const editAction = canManage ? '<button class="ghost-button" data-action="edit-campaign">Edit campaign</button>' : '';
+const addAction = canEditContent ? '<button class="primary-button" data-action="add-kols-current">＋ Add KOLs</button>' : '';
+main.innerHTML = '<button class="back-button" data-action="back-campaigns">← All campaigns</button>' +
+'<section class="campaign-hero">' + appTile(campaign.App, campaign.Market) +
+'<div class="campaign-hero-main"><div><span class="campaign-id">' + escapeHtml(campaign.Campaign_ID) + '</span>' + statusBadge(campaign.Status) +
+'</div><h1>' + escapeHtml(campaign.App + ' · ' + campaign.Campaign_Name) + '</h1><p>' +
+escapeHtml([campaign.Market, campaign.Platforms, dateRange(campaign), campaign.Owner_Email].filter(Boolean).join(' · ')) +
+'</p></div><div class="campaign-hero-actions">' + briefAction + editAction + addAction + '</div></section>' +
+'<nav class="detail-tabs">' + tabs.map(function (tab) {
+return '<button class="' + (state.campaignTab === tab ? 'active' : '') + '" data-action="detail-tab" data-tab="' + tab + '">' +
+tab + (tab === 'KOLs' ? '<span>' + data.metrics.totalKols + '</span>' : '') + '</button>';
+}).join('') + '</nav><div id="detail-content">' + renderCampaignTab(data) + '</div>';
+requestAnimationFrame(installCampaignWorkspaceStickyHeader_);
+};
+renderCampaignTab = function (data) {
+const base = legacyRenderCampaignTabV131(data);
+if (state.campaignTab === 'Performance') return campaignPerformanceTab(data.deliverables || []);
+if (state.campaignTab !== 'Overview') return base;
+const metrics = data.metrics || {};
+const canSeeFinance = ['Admin', 'Booking'].includes(state.user.Role);
+const alerts = [
+{ value: metrics.missingContracts || 0, label: 'Confirmed KOLs without signed contract', action: 'Contracts', tone: 'amber', financeOnly: true },
+{ value: metrics.overdueDeliverables || 0, label: 'Overdue content items', action: 'Content', tone: 'danger', financeOnly: false },
+{ value: metrics.pendingPayments || 0, label: 'Payments still open', action: 'Payments', tone: 'blue', financeOnly: true },
+].filter(function (item) { return !item.financeOnly || canSeeFinance; });
+if (!alerts.length) return base;
+return base + '<section class="card workflow-alerts"><div class="card-head"><div><p class="eyebrow">Workflow control</p><h2>Needs attention</h2></div><span class="status status-blue">Live</span></div><div class="workflow-alert-grid">' +
+alerts.map(function (item) {
+return '<button data-action="detail-tab" data-tab="' + item.action + '"><strong class="alert-' + item.tone + '">' + item.value + '</strong><span>' + escapeHtml(item.label) + '</span><small>Open ' + item.action + ' →</small></button>';
+}).join('') + '</div></section>';
+};
+campaignKolsTable = function (rows) {
+if (!rows.length) return emptyState('◎', 'No KOLs in this campaign', 'Open KOL Database, select accounts and add them to this campaign.', '<button class="primary-button" data-action="add-kols-current">Open database</button>');
+const query = state.workspace.kolQuery.toLowerCase();
+const filtered = rows.filter(function (row) {
+if (state.workspace.bookingFilter !== 'All' && row.Booking_Status !== state.workspace.bookingFilter) return false;
+if (!query) return true;
+return [row.Username, row.Display_Name, row.Platform, row.PIC_Email, row.Categories].join(' ').toLowerCase().indexOf(query) >= 0;
+});
+const sortedFiltered = groupCampaignKolRowsByCreator_(sortCampaignRows_(filtered, state.workspace.kolSort, 'kols'));
+const visibleIds = {};
+sortedFiltered.forEach(function (row) { visibleIds[row.Campaign_KOL_ID] = true; });
+Array.from(state.workspace.selectedKols).forEach(function (id) {
+if (!rows.some(function (row) { return row.Campaign_KOL_ID === id; })) state.workspace.selectedKols.delete(id);
+});
+const allSelected = sortedFiltered.length && sortedFiltered.every(function (row) { return state.workspace.selectedKols.has(row.Campaign_KOL_ID); });
+const statuses = workspaceLists().bookingStatuses || ['Picked','Approved','Contacted','Negotiating','Confirmed','Declined','Cancelled'];
+const canManage = canManageCampaignWorkspace();
+const canEditContent = canManageContentWorkspace();
+const canApproveBooking = canApproveCampaignKolWorkspace();
+const canEditNotes = canEditCampaignKolNotesWorkspace();
+const showContracts = canManage && state.campaignDetail && state.campaignDetail.campaign.Market === 'VN';
+const financeHeaders = showContracts ? '<th class="campaign-col-contract">Contract</th>' : '';
+const paymentHeader = canManage ? '<th class="campaign-col-payment">Payment</th>' : '';
+const bookingStatusOptions = workspaceLists().bookingStatuses || ['Picked','Approved','Contacted','Negotiating','Confirmed','Declined','Cancelled'];
+const contentStatusOptions = workspaceLists().contentStatuses || ['Not started', 'Draft submitted', 'Need edit', 'Approved', 'Posted'];
+const creatorPlatformCounts = {};
+sortedFiltered.forEach(function (row) {
+const key = row.Creator_ID || row.Campaign_KOL_ID;
+creatorPlatformCounts[key] = (creatorPlatformCounts[key] || 0) + 1;
+});
+const renderedCreatorKeys = {};
+const market = String(state.campaignDetail && state.campaignDetail.campaign.Market || '');
+const showAfterPit = market === 'VN';
+const showVndFee = market === 'TH' || market === 'TW';
+const commercialHeaders = '<th class="campaign-col-code-ad">Code ad fee</th>' +
+(showAfterPit ? '<th class="campaign-col-gross">Gross amount</th>' : '') +
+(showVndFee ? '<th class="campaign-col-fee-vnd">Fee (VND)</th>' : '');
+const noteHeader = '<th class="campaign-col-note">Note</th>';
+// Order and widths follow what Booking actually needs to see first. This used to
+// sum to 2,284px inside a 978px area with Content, Payment and PIC all past the
+// fold — the three columns Booking uses most. The status trio now sits directly
+// after the identity columns, and money detail, Note and PIC move right.
+//
+// Order must stay in lockstep with the <thead> and the row cells below:
+//   select, creator | Account, Booking, Net, Content, [Payment], [Contract],
+//   Code ad, [Gross], [Fee VND], Draft, Note, PIC, actions
+const campaignKolColumnWidths = [
+44, 200, 130, 130, 130, 130
+];
+if (canManage) campaignKolColumnWidths.push(110);
+if (showContracts) campaignKolColumnWidths.push(110);
+campaignKolColumnWidths.push(130);
+if (showAfterPit) campaignKolColumnWidths.push(140);
+if (showVndFee) campaignKolColumnWidths.push(140);
+// actions: 80 -> 124. Trong 80px, tru padding o 2x11px chi con 58px cho cap nut
+// Edit + Remove (~100px) nen chu "Remove" bi cat mat - moi th/td bang nay deu
+// overflow: hidden nen khong the tran ra. Note 150 -> 130 bu lai, tong bang
+// chi tang 24px.
+campaignKolColumnWidths.push(90, 130, 120, 124);
+const campaignKolTableWidth = campaignKolColumnWidths.reduce(function (total, width) {
+return total + width;
+}, 0);
+const campaignKolColgroup = '<colgroup>' + campaignKolColumnWidths.map(function (width) {
+return '<col style="width:' + width + 'px">';
+}).join('') + '</colgroup>';
+const bulkField = 'Booking_Status';
+const bulkLabel = 'Update booking';
+const bulkDefault = 'Contacted';
+return '<section class="table-card card workspace-table campaign-sticky-table-card"><div class="workspace-toolbar"><div><strong>' + filtered.length + '</strong><span> of ' + rows.length + ' KOL accounts</span></div>' +
+'<input id="campaign-kol-query" placeholder="Search creator, platform or PIC" value="' + escapeAttr(state.workspace.kolQuery) + '">' +
+'<select id="campaign-booking-filter"><option>All</option>' + optionList(statuses, state.workspace.bookingFilter) + '</select>' +
+campaignSortControl_('campaign-kol-sort', state.workspace.kolSort, [
+['creator-asc', 'Creator A → Z'],
+['creator-desc', 'Creator Z → A'],
+['platform-asc', 'Platform A → Z'],
+['followers-desc', 'Followers: high → low'],
+['booking-asc', 'Booking workflow'],
+['net-desc', 'Net amount: high → low'],
+['gross-desc', 'Gross amount: high → low'],
+['pic-asc', 'PIC A → Z'],
+]) + '</div>' +
+// Bulk bar KHÔNG còn render tại đây (F23). Nó nằm sâu trong .table-card, mà thẻ đó là
+// overflow: hidden, nên cuộn xuống là mất control trong khi vẫn còn dòng đang chọn.
+// Giờ updateCampaignBulkBar_ ghi vào #bulk-bar-host — phần tử top-level trong
+// Index.html — và được gọi ở cuối renderCampaignTab, tức mọi lần đổi selection.
+'' +
+'<div class="table-scroll campaign-kol-scroll"><table class="data-table campaign-kol-table" style="width:' + campaignKolTableWidth + 'px;min-width:' + campaignKolTableWidth + 'px;max-width:none">' + campaignKolColgroup + '<thead><tr><th class="campaign-col-select"><input id="campaign-select-visible" type="checkbox"' + (allSelected ? ' checked' : '') + '></th><th class="campaign-col-creator">Creator</th><th>Account</th><th>Booking</th><th class="campaign-col-net">Net amount</th><th class="campaign-col-content">Content</th>' + paymentHeader + financeHeaders + commercialHeaders + '<th class="campaign-col-draft">Draft</th>' + noteHeader + '<th class="campaign-col-pic">PIC</th><th></th></tr></thead><tbody>' +
+(sortedFiltered.length ? sortedFiltered.map(function (row) {
+const profile = safeWorkspaceUrl(row.Profile_URL);
+const draftUrl = safeWorkspaceUrl(row.Draft_URL);
+const canEditInline = canManage || canApproveBooking;
+const rowBookingStatusOptions = canManage
+? bookingStatusOptions
+: Array.from(new Set([row.Booking_Status || 'Picked', 'Approved']));
+const creatorKey = row.Creator_ID || row.Campaign_KOL_ID;
+const platformCount = creatorPlatformCounts[creatorKey] || 1;
+const multiPlatform = platformCount > 1;
+const renderCreatorCell = !renderedCreatorKeys[creatorKey];
+renderedCreatorKeys[creatorKey] = true;
+const creatorCell = renderCreatorCell
+? '<td class="campaign-col-creator campaign-creator-group-cell" rowspan="' + platformCount + '"><div class="creator-cell">' + avatar(row.Display_Name || row.Username, row.Market) + '<div><strong>' + escapeHtml(row.Display_Name || row.Username || '—') + '</strong>' + (row.Categories ? '<small>' + escapeHtml(row.Categories) + '</small>' : '') + (multiPlatform ? '<b class="multi-platform-flag">' + platformCount + ' platforms</b>' : '') + '</div></div></td>'
+: '';
+const commercialCells = '<td class="campaign-col-code-ad">' + (canManage
+? '<div class="campaign-inline-editor"><input class="campaign-extra-input" data-campaign-inline-field="Code_Ad_Fee" data-campaign-kol-id="' + escapeAttr(row.Campaign_KOL_ID) + '" data-original-value="' + escapeAttr(String(row.Code_Ad_Fee || 0)) + '" value="' + escapeAttr(formatInputNumber(row.Code_Ad_Fee || 0)) + '" inputmode="numeric" data-numeric-input aria-label="Code ad fee"><span class="campaign-save-indicator" aria-live="polite"></span></div>'
+: '<strong>' + money(row.Code_Ad_Fee || 0, row.Currency) + '</strong>') + '</td>' +
+(showAfterPit ? '<td class="campaign-col-gross"><div class="campaign-money-cell" title="' + escapeAttr(money(row.Gross_Amount || row.After_PIT_Fee || 0, 'VND')) + '">' + (canManage
+? '<strong data-gross-amount>' + money(row.Gross_Amount || row.After_PIT_Fee || 0, 'VND') + '</strong><small class="cell-sub">Auto calculated</small>'
+: '<strong>' + money(row.Gross_Amount || row.After_PIT_Fee || 0, 'VND') + '</strong>') + '</div></td>' : '') +
+(showVndFee ? '<td class="campaign-col-fee-vnd"><div class="campaign-money-cell"><strong>' + money(row.Fee_VND || 0, 'VND') + '</strong><small class="cell-sub">Auto FX</small></div></td>' : '');
+// Note was the last cell of commercialCells, which pinned it inside the money
+// block. It is a low-priority column, so it now renders near the end.
+const noteCell = '<td class="campaign-col-note">' + (canEditNotes ? '<div class="campaign-inline-editor"><input class="campaign-extra-input campaign-extra-text" data-campaign-inline-field="Notes" data-campaign-kol-id="' + escapeAttr(row.Campaign_KOL_ID) + '" data-original-value="' + escapeAttr(row.Notes || '') + '" value="' + escapeAttr(row.Notes || '') + '" placeholder="Add note"><span class="campaign-save-indicator" aria-live="polite"></span></div>' : escapeHtml(row.Notes || '—')) + '</td>';
+const bookingCell = '<td>' + (canEditInline ? inlineStatusSelect('Booking_Status', row.Booking_Status, row.Campaign_KOL_ID, rowBookingStatusOptions) : statusBadge(row.Booking_Status)) + '</td>';
+const netCell = '<td class="campaign-col-net">' + (canManage
+? '<div class="campaign-fee-editor"><input type="text" inputmode="numeric" data-numeric-input data-campaign-inline-field="Final_Fee" data-campaign-kol-id="' + escapeAttr(row.Campaign_KOL_ID) + '" data-original-value="' + escapeAttr(String(campaignKolNetAmountClient_(row))) + '" value="' + escapeAttr(formatInputNumber(campaignKolNetAmountClient_(row))) + '" aria-label="Net amount"><small>' + escapeHtml(row.Currency || '') + '</small><span class="campaign-save-indicator" aria-live="polite"></span></div>'
+: '<strong>' + money(campaignKolNetAmountClient_(row), row.Currency) + '</strong>') + '</td>';
+const contentCell = '<td class="campaign-col-content">' + (canEditContent ? inlineStatusSelect('Content_Status', row.Content_Status, row.Campaign_KOL_ID, contentStatusOptions) : statusBadge(row.Content_Status)) + '</td>';
+const paymentCell = canManage ? '<td class="campaign-col-payment">' + statusBadge(row.Payment_Status) + '</td>' : '';
+const contractCell = showContracts ? '<td class="campaign-col-contract">' + statusBadge(row.Contract_Status) + '</td>' : '';
+const draftCell = '<td class="campaign-col-draft">' + (draftUrl ? '<a href="' + escapeAttr(draftUrl) + '" target="_blank" rel="noopener">Draft ↗</a>' : '<span class="cell-sub">—</span>') + '</td>';
+const picCell = '<td class="campaign-col-pic" title="' + escapeAttr(row.PIC_Email || '') + '">' + escapeHtml(row.PIC_Email || '—') + '</td>';
+const actionsCell = '<td>' + (canManage
+? '<div class="row-actions"><button class="mini-edit-button" data-action="edit-campaign-kol" data-id="' + escapeAttr(row.Campaign_KOL_ID) + '">Edit</button>' +
+'<button class="mini-remove-button" data-action="remove-campaign-kol" data-id="' + escapeAttr(row.Campaign_KOL_ID) + '">Remove</button></div>'
+: '') + '</td>';
+return '<tr class="' + (multiPlatform ? 'creator-multi-platform' : '') + (renderCreatorCell ? ' creator-group-start' : ' creator-group-continuation') + '" data-campaign-extra-row="' + escapeAttr(row.Campaign_KOL_ID) + '"><td class="campaign-col-select"><input type="checkbox" data-campaign-kol-checkbox="' + escapeAttr(row.Campaign_KOL_ID) + '"' + (state.workspace.selectedKols.has(row.Campaign_KOL_ID) ? ' checked' : '') + '></td>' +
+creatorCell +
+'<td>' + platformBadge(row.Platform) + '<small class="cell-sub">@' + escapeHtml(row.Username || '—') + ' · ' + compactNumber(row.Followers || 0) + '</small>' + (profile ? '<a href="' + escapeAttr(profile) + '" target="_blank" rel="noopener">Profile ↗</a>' : '') + '</td>' +
+bookingCell + netCell + contentCell + paymentCell + contractCell + commercialCells + draftCell + noteCell + picCell + actionsCell + '</tr>';
+}).join('') : '<tr><td colspan="' + campaignKolColumnWidths.length + '"><div class="inline-empty">No KOLs match this filter.</div></td></tr>') +
+'</tbody></table></div></section>';
+};
+deliverablesTable = function (rows) {
+const canManage = canManageCampaignWorkspace();
+const canEditContent = canManageContentWorkspace();
+const actions = (canManage ? '<button class="ghost-button" data-action="generate-deliverables">Generate from confirmed</button>' : '') + (canEditContent ? '<button class="ghost-button" data-action="import-performance-csv">⇧ Import performance CSV</button><button class="primary-button" data-action="new-deliverable">＋ Deliverable</button>' : '');
+const contentSortControl = campaignSortControl_('campaign-content-sort', state.workspace.contentSort, [
+['schedule-asc', 'Posting date: earliest'],
+['schedule-desc', 'Posting date: latest'],
+['creator-asc', 'Creator A → Z'],
+['creator-desc', 'Creator Z → A'],
+['platform-asc', 'Platform A → Z'],
+['status-asc', 'Status workflow'],
+['draft-desc', 'Draft submitted: newest'],
+['post-desc', 'Post submitted: newest'],
+['updated-desc', 'Recently updated'],
+]);
+const actionsWrap = '<div class="workspace-actions campaign-content-actions">' + contentSortControl + actions + '</div>';
+if (!rows.length) return '<section class="workspace-section-head"><div><p class="eyebrow">Content operations</p><h2>Deliverables</h2></div>' + actionsWrap + '</section>' + emptyState('✎', 'No deliverables yet', 'Generate one deliverable for every confirmed KOL, or add one manually.', '');
+const sortedRows = sortCampaignRows_(rows, state.workspace.contentSort, 'content');
+const statuses = workspaceLists().contentStatuses || ['Not started', 'Draft submitted', 'Need edit', 'Approved', 'Posted'];
+return '<section class="workspace-section-head"><div><p class="eyebrow">Content operations</p><h2>' + rows.length + ' deliverables</h2></div>' + actionsWrap + '</section><section class="table-card card workspace-table content-workspace-table campaign-sticky-table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Creator</th><th>Deliverable</th><th>Status</th><th>Draft</th><th>Feedback</th><th>Post</th><th></th></tr></thead><tbody>' + sortedRows.map(function (row) {
+const draftUrl = safeWorkspaceUrl(row.Draft_URL);
+const postUrl = safeWorkspaceUrl(row.Post_URL);
+const draftCell = draftUrl
+? '<div class="deliverable-link-line"><small class="cell-sub">Submitted ' + escapeHtml(workspaceDateTime(row.Draft_Submitted_At) || '—') + '</small><a href="' + escapeAttr(draftUrl) + '" target="_blank" rel="noopener">Draft ↗</a>' + quickDeliverableEditor(row, 'draft', canEditContent) + '</div>'
+: '<div class="deliverable-link-line"><small class="cell-sub">Due ' + escapeHtml(workspaceDate(row.Draft_Due) || '—') + '</small><span class="cell-sub">No link yet</span>' + quickDeliverableEditor(row, 'draft', canEditContent) + '</div>';
+const postCell = postUrl
+? '<div class="deliverable-link-line"><small class="cell-sub">Posted ' + escapeHtml(workspaceDate(row.Posting_Date) || '—') + '</small><a href="' + escapeAttr(postUrl) + '" target="_blank" rel="noopener">Post ↗</a>' + quickDeliverableEditor(row, 'post', canEditContent) + '</div>'
+: '<div class="deliverable-link-line"><small class="cell-sub">Expected ' + escapeHtml(workspaceDate(row.Posting_Date) || '—') + '</small><span class="cell-sub">No link yet</span>' + quickDeliverableEditor(row, 'post', canEditContent) + '</div>';
+const feedbackCount = Number(row.Feedback_Count || 0);
+const latest = String(row.Latest_Feedback || '');
+const feedbackCell = '<button class="feedback-cell' + (feedbackCount ? ' has-feedback' : '') + '" data-action="content-feedback" data-id="' + escapeAttr(row.Deliverable_ID) + '">' +
+'<span>' + (feedbackCount ? ('Round ' + feedbackCount) : 'No feedback') + '</span>' +
+'<small>' + escapeHtml(latest || (canEditContent ? 'Add feedback' : 'View history')) + '</small></button>';
+const statusCell = canEditContent
+? '<select class="status-select status-' + statusTone(row.Content_Status) + '" data-deliverable-status="' + escapeAttr(row.Deliverable_ID) + '" data-campaign-kol="' + escapeAttr(row.Campaign_KOL_ID) + '">' + optionList(statuses, row.Content_Status) + '</select>'
+: statusBadge(row.Content_Status);
+return '<tr><td><strong>' + escapeHtml(row.Display_Name || row.Username || '—') + '</strong><small class="cell-sub">@' + escapeHtml(row.Username || '—') + '</small></td><td><strong>' + escapeHtml(row.Type || '—') + '</strong><small class="cell-sub">' + platformBadge(row.Platform) + '</small></td><td>' + statusCell + '</td><td>' + draftCell + '</td><td>' + feedbackCell + '</td><td>' + postCell + '</td><td>' + (canEditContent
+  ? '<div class="row-actions"><button class="mini-edit-button" data-action="edit-deliverable" data-id="' + escapeAttr(row.Deliverable_ID) + '">Edit all</button>' +
+    // Delete tách khỏi Edit: Marketing vẫn sửa được deliverable (saveDeliverable cho
+    // phép) nhưng KHÔNG xoá được nữa (F05). Trước đây cả hai cùng gate bằng
+    // canEditContent, nên Marketing thấy nút Delete và giờ nó sẽ luôn báo lỗi quyền —
+    // một nút không bao giờ chạy được thì tệ hơn là không có nút.
+    (canManage
+      ? '<button class="mini-remove-button" data-action="delete-deliverable" data-id="' + escapeAttr(row.Deliverable_ID) + '">Delete</button>'
+      : '') + '</div>'
+  : '') + '</td></tr>';
+}).join('') + '</tbody></table></div></section>';
+};
+/**
+ * Vẽ bulk-action bar vào #bulk-bar-host (F23).
+ *
+ * Host nằm NGOÀI #main, mà delegation click/change chỉ gắn trên #main, nên các control
+ * ở đây phải được gắn handler TRỰC TIẾP — đúng cách updateSelectionBar làm cho
+ * #selection-bar. Nếu dựa vào data-action như trước thì nút sẽ im lặng không làm gì.
+ *
+ * Selection nằm ở state.workspace.selectedKols nên nó sống qua mọi lần cuộn và mọi lần
+ * render lại; hàm này chỉ phản chiếu state đó.
+ */
+function updateCampaignBulkBar_() {
+const host = document.getElementById('bulk-bar-host');
+if (!host) return;
+const count = state.workspace.selectedKols.size;
+const onCampaignOverview = state.view === 'campaigns' && state.campaignDetail &&
+state.campaignTab === 'Overview';
+if (!count || !onCampaignOverview || !canManageCampaignWorkspace()) {
+host.classList.add('is-hidden');
+host.innerHTML = '';
+return;
+}
+const statuses = workspaceLists().bookingStatuses ||
+['Picked','Approved','Contacted','Negotiating','Confirmed','Declined','Cancelled'];
+// Giữ ĐÚNG ba giá trị mà bản render cũ dùng (CampaignWorkspace.html ~146-148) —
+// đây là di chuyển chỗ hiển thị, không đổi hành vi bulk update.
+const bulkField = 'Booking_Status';
+const bulkLabel = 'Update booking';
+const bulkDefault = 'Contacted';
+host.classList.remove('is-hidden');
+host.innerHTML = '<div class="bulk-bar"><span><strong>' + count + '</strong> selected — bulk update:</span>' +
+'<select id="bulk-booking-value" data-field="' + escapeAttr(bulkField) + '">' +
+optionList(statuses, bulkDefault) + '</select>' +
+'<button class="primary-button" id="bulk-booking-apply">' + escapeHtml(bulkLabel) + '</button></div>';
+const apply = document.getElementById('bulk-booking-apply');
+if (apply) apply.onclick = function () { return runBulkBookingUpdate(apply); };
+}
+let campaignStickyHeaderObserver_ = null;
+function installCampaignWorkspaceStickyHeader_() {
+if (campaignStickyHeaderObserver_) {
+campaignStickyHeaderObserver_.disconnect();
+campaignStickyHeaderObserver_ = null;
+}
+const card = document.querySelector('.campaign-sticky-table-card');
+if (!card) return;
+const oldSticky = card.querySelector('.campaign-sticky-header');
+if (oldSticky) oldSticky.remove();
+const scroll = card.querySelector('.table-scroll');
+const sourceTable = scroll && scroll.querySelector('.data-table');
+const sourceHead = sourceTable && sourceTable.querySelector('thead');
+if (!scroll || !sourceTable || !sourceHead) return;
+
+const sticky = document.createElement('div');
+sticky.className = 'campaign-sticky-header';
+sticky.setAttribute('aria-hidden', 'true');
+const viewport = document.createElement('div');
+viewport.className = 'campaign-sticky-header-viewport';
+const cloneTable = document.createElement('table');
+cloneTable.className = sourceTable.className + ' campaign-sticky-header-table';
+cloneTable.appendChild(sourceHead.cloneNode(true));
+cloneTable.querySelectorAll('[id]').forEach(function (node) { node.removeAttribute('id'); });
+cloneTable.querySelectorAll('input,button,a,select,textarea').forEach(function (node) {
+node.setAttribute('tabindex', '-1');
+node.setAttribute('aria-hidden', 'true');
+node.disabled = true;
+});
+// The select-all is the one clone control worth keeping live: while the sticky
+// header is showing, the real one is scrolled out of reach, so the visible
+// checkbox did nothing — and because the bar is pointer-events: none the click
+// fell through and toggled a row instead.
+//
+// It drives the real checkbox rather than duplicating the logic, because the
+// change handler is delegated on id and the clone has had its ids stripped above.
+// The bar stays aria-hidden: keyboard and screen-reader users reach the real
+// header checkbox directly, so this is a mouse affordance only.
+const cloneSelectAll = cloneTable.querySelector('input[type="checkbox"]');
+const sourceSelectAll = sourceHead.querySelector('input[type="checkbox"]');
+if (cloneSelectAll && sourceSelectAll) {
+cloneSelectAll.disabled = false;
+cloneSelectAll.removeAttribute('tabindex');
+cloneSelectAll.addEventListener('change', function () {
+sourceSelectAll.checked = cloneSelectAll.checked;
+sourceSelectAll.dispatchEvent(new Event('change', { bubbles: true }));
+});
+}
+viewport.appendChild(cloneTable);
+sticky.appendChild(viewport);
+card.insertBefore(sticky, scroll);
+
+let frame = 0;
+function syncCampaignStickyHeader_() {
+if (!sourceTable.isConnected || !sticky.isConnected) return;
+const sourceCells = sourceHead.querySelectorAll('th');
+const cloneCells = cloneTable.querySelectorAll('th');
+let measuredWidth = 0;
+sourceCells.forEach(function (cell, index) {
+const width = cell.getBoundingClientRect().width;
+measuredWidth += width;
+if (!cloneCells[index]) return;
+cloneCells[index].style.setProperty('width', width + 'px', 'important');
+cloneCells[index].style.setProperty('min-width', width + 'px', 'important');
+cloneCells[index].style.setProperty('max-width', width + 'px', 'important');
+});
+cloneTable.style.width = Math.max(sourceTable.scrollWidth, measuredWidth) + 'px';
+viewport.scrollLeft = scroll.scrollLeft;
+const stickyTop = window.innerWidth <= 680 ? 58 : 66;
+const sourceRect = sourceHead.getBoundingClientRect();
+const cardRect = card.getBoundingClientRect();
+const shouldShow = sourceRect.top < stickyTop && cardRect.bottom > stickyTop + 40;
+sticky.classList.toggle('is-active', shouldShow);
+}
+function scheduleCampaignStickyHeaderSync_() {
+if (frame) cancelAnimationFrame(frame);
+frame = requestAnimationFrame(function () {
+frame = 0;
+syncCampaignStickyHeader_();
+});
+}
+scroll.addEventListener('scroll', scheduleCampaignStickyHeaderSync_, { passive: true });
+window.addEventListener('scroll', scheduleCampaignStickyHeaderSync_, { passive: true });
+window.addEventListener('resize', scheduleCampaignStickyHeaderSync_, { passive: true });
+if (typeof ResizeObserver !== 'undefined') {
+campaignStickyHeaderObserver_ = new ResizeObserver(scheduleCampaignStickyHeaderSync_);
+campaignStickyHeaderObserver_.observe(sourceTable);
+}
+scheduleCampaignStickyHeaderSync_();
+}
+function campaignSortControl_(id, selected, options) {
+return '<label class="campaign-sort-control" for="' + id + '"><span>Sort</span><select id="' + id + '">' +
+options.map(function (option) {
+return '<option value="' + escapeAttr(option[0]) + '"' + (option[0] === selected ? ' selected' : '') + '>' + escapeHtml(option[1]) + '</option>';
+}).join('') + '</select></label>';
+}
+function groupCampaignKolRowsByCreator_(rows) {
+const groups = {};
+const order = [];
+(rows || []).forEach(function (row) {
+const key = row.Creator_ID || row.Campaign_KOL_ID;
+if (!groups[key]) {
+groups[key] = [];
+order.push(key);
+}
+groups[key].push(row);
+});
+return order.reduce(function (result, key) {
+return result.concat(groups[key]);
+}, []);
+}
+function sortCampaignRows_(rows, sortKey, scope) {
+const bookingOrder = ['Picked', 'Approved', 'Contacted', 'Negotiating', 'Confirmed', 'Declined', 'Cancelled'];
+const contentOrder = ['Not started', 'Draft submitted', 'Need edit', 'Approved', 'Posted'];
+const direction = /-desc$/.test(sortKey) ? -1 : 1;
+const field = String(sortKey || '').replace(/-(asc|desc)$/, '');
+const textValue = function (row, key) {
+if (key === 'creator') return row.Display_Name || row.Username || '';
+if (key === 'platform') return row.Platform || '';
+if (key === 'pic') return row.PIC_Email || '';
+return row[key] || '';
+};
+const numberValue = function (row, key) {
+if (key === 'followers') return numericValue(row.Followers);
+if (key === 'net') return campaignKolNetAmountClient_(row);
+if (key === 'gross') return campaignKolGrossAmountClient_(row);
+return numericValue(row[key]);
+};
+const dateValue = function (row, key) {
+let value = '';
+if (key === 'schedule') value = row.Posting_Date || row.Draft_Due;
+if (key === 'draft') value = row.Draft_Submitted_At || row.Draft_Due;
+if (key === 'post') value = row.Post_Submitted_At || row.Posting_Date;
+if (key === 'updated') value = row.Updated_At;
+const date = safeDate(value);
+return date ? date.getTime() : null;
+};
+return (rows || []).map(function (row, index) {
+return { row: row, index: index };
+}).sort(function (a, b) {
+let comparison = 0;
+if (field === 'booking') {
+comparison = bookingOrder.indexOf(a.row.Booking_Status) - bookingOrder.indexOf(b.row.Booking_Status);
+} else if (field === 'status') {
+comparison = contentOrder.indexOf(a.row.Content_Status) - contentOrder.indexOf(b.row.Content_Status);
+} else if (['followers', 'net', 'gross'].indexOf(field) >= 0) {
+comparison = numberValue(a.row, field) - numberValue(b.row, field);
+} else if (['schedule', 'draft', 'post', 'updated'].indexOf(field) >= 0) {
+const dateA = dateValue(a.row, field);
+const dateB = dateValue(b.row, field);
+if (dateA === null && dateB !== null) return 1;
+if (dateA !== null && dateB === null) return -1;
+comparison = (dateA || 0) - (dateB || 0);
+} else {
+comparison = String(textValue(a.row, field)).localeCompare(String(textValue(b.row, field)), undefined, { numeric: true, sensitivity: 'base' });
+}
+if (comparison) return comparison * direction;
+const stableA = scope === 'content' ? a.row.Deliverable_ID : a.row.Campaign_KOL_ID;
+const stableB = scope === 'content' ? b.row.Deliverable_ID : b.row.Campaign_KOL_ID;
+return String(stableA || a.index).localeCompare(String(stableB || b.index), undefined, { numeric: true });
+}).map(function (item) { return item.row; });
+}
+function quickDeliverableEditor(row, kind, canEdit) {
+if (!canEdit) return '';
+const isDraft = kind === 'draft';
+const urlField = isDraft ? 'Draft_URL' : 'Post_URL';
+const dateField = isDraft ? 'Draft_Due' : 'Posting_Date';
+const action = isDraft ? 'save-deliverable-draft' : 'save-deliverable-post';
+return '<details class="quick-deliverable-editor" data-quick-deliverable="' + escapeAttr(row.Deliverable_ID) + '">' +
+'<summary data-action="toggle-quick-deliverable" aria-label="Edit ' + kind + '">✎</summary><div><label>' + (isDraft ? 'Draft link' : 'Post link') +
+'<input type="url" data-quick-field="' + urlField + '" value="' + escapeAttr(row[urlField] || '') + '" placeholder="Paste URL"></label>' +
+'<label>' + (isDraft ? 'Draft due date' : 'Post date') + '<input type="date" data-quick-field="' + dateField + '" data-original-value="' + escapeAttr(workspaceDate(row[dateField])) + '" value="' + escapeAttr(workspaceDate(row[dateField])) + '"></label>' +
+'<button type="button" class="inline-save-button quick-save-icon" data-action="' + action + '" data-id="' + escapeAttr(row.Deliverable_ID) + '" data-campaign-kol="' + escapeAttr(row.Campaign_KOL_ID) + '" aria-label="Save ' + kind + '" title="Save">✓</button></div></details>';
+}
+
+function campaignPerformanceTab(rows) {
+const liveRows = (rows || []).filter(function (row) { return row.Post_URL || row.Content_Status === 'Posted'; });
+// Dung CHUNG summarizePerformanceClient voi tab Performance thay vi tu cong lai
+// mot bo tong rieng. Cung mot campaign thi hai man hinh gio ra cung con so.
+// Tinh tren TOAN BO deliverables (khong phai chi liveRows) de khop dung cach
+// tab Performance lam: Posts = tat ca, Live_Posts = nhung bai da len.
+const summary = summarizePerformanceClient(rows || []);
+const actions = canManageContentWorkspace()
+// Import CSV lives on the Performance page only — it was duplicated here. The
+    // scan button keeps its place as the fallback but loses the TikTok-only label,
+    // which stopped being true once scanning went multi-platform.
+    ? '<div class="workspace-actions"><button class="ghost-button" data-action="scan-performance">Scan now</button></div>'
+: '';
+return '<section class="workspace-section-head"><div><p class="eyebrow">Campaign performance</p><h2>Post results</h2></div>' + actions + '</section>' +
+performanceMetricCards_(summary) + performanceTable(liveRows);
+}
+documentsTable = function (rows, isContract) {
+const canManage = isContract ? canManageCampaignWorkspace() : canManageFinanceWorkspace();
+const label = isContract ? 'contract' : 'payment';
+const action = isContract ? 'new-contract' : 'new-payment';
+const actions = canManage ? '<button class="primary-button" data-action="' + action + '">＋ Add ' + label + '</button>' : '';
+if (!rows.length) return '<section class="workspace-section-head"><div><p class="eyebrow">Operations</p><h2>' + (isContract ? 'Contracts' : 'Payments') + '</h2></div>' + actions + '</section>' + emptyState(isContract ? '▤' : '$', 'No ' + label + 's yet', 'Create the first record directly from this campaign.', '');
+return '<section class="workspace-section-head"><div><p class="eyebrow">Operations</p><h2>' + rows.length + ' ' + label + ' records</h2></div>' + actions + '</section><section class="table-card card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Creator</th><th>' + (isContract ? 'Contract no.' : 'Amount') + '</th><th>Status</th><th>Due date</th><th>Owner</th><th>Link</th><th></th></tr></thead><tbody>' + rows.map(function (row) {
+const status = isContract ? row.Sign_Status : row.Payment_Status;
+const url = safeWorkspaceUrl(isContract ? row.Contract_URL : row.Invoice_URL);
+const id = isContract ? row.Contract_ID : row.Payment_ID;
+return '<tr><td><strong>' + escapeHtml(row.Display_Name || row.Username || '—') + '</strong><small class="cell-sub">@' + escapeHtml(row.Username || '—') + '</small></td><td><strong>' + (isContract ? escapeHtml(row.Contract_No || '—') : money(row.Amount, row.Currency)) + '</strong></td><td>' + statusBadge(status) + '</td><td>' + escapeHtml(workspaceDate(row.Due_Date) || '—') + '</td><td>' + escapeHtml(row.Owner_Email || '—') + '</td><td>' + (url ? '<a href="' + escapeAttr(url) + '" target="_blank">Open ↗</a>' : '—') + '</td><td>' + (canManage
+  ? '<div class="row-actions"><button class="mini-edit-button" data-action="edit-' + label + '" data-id="' + escapeAttr(id) + '">Edit</button>' +
+    '<button class="mini-remove-button" data-action="delete-' + label + '" data-id="' + escapeAttr(id) + '">Delete</button></div>'
+  : '') + '</td></tr>';
+}).join('') + '</tbody></table></div></section>';
+};
+handleMainClick = function (event) {
+const node = event.target.closest('[data-action]');
+if (!node) return;
+const action = node.dataset.action;
+if (action === 'detail-tab') {
+state.campaignTab = node.dataset.tab;
+persistUiState_();
+return renderCampaignDetail();
+}
+if (action === 'edit-campaign') return openCampaignEditModal();
+if (action === 'add-kols-current') return openCurrentCampaignDatabase();
+if (action === 'edit-campaign-kol') return openCampaignKolModal(node.dataset.id);
+if (action === 'content-feedback') return openContentFeedbackModal(node.dataset.id);
+if (action === 'toggle-quick-deliverable') {
+const editor = node.closest('[data-quick-deliverable]');
+requestAnimationFrame(function () { positionQuickDeliverableEditor_(editor); });
+return;
+}
+if (action === 'save-deliverable-draft') return saveDeliverableQuick(node, 'draft');
+if (action === 'save-deliverable-post') return saveDeliverableQuick(node, 'post');
+if (action === 'generate-contract') return runGenerateContract(node);
+if (action === 'fetch-performance') return runFetchPerformance(node);
+if (action === 'scan-performance' && state.view === 'campaigns') return runCampaignPerformanceScan(node);
+if (action === 'import-performance-csv') return openImportPerformanceCsvModal();
+if (action === 'bulk-booking-update') return runBulkBookingUpdate(node);
+if (action === 'generate-deliverables') return runGenerateDeliverables(node);
+if (action === 'new-deliverable') return openDeliverableModal('');
+if (action === 'edit-deliverable') return openDeliverableModal(node.dataset.id);
+if (action === 'new-contract') return openContractModal('');
+if (action === 'edit-contract') return openContractModal(node.dataset.id);
+if (action === 'new-payment') return openPaymentModal('');
+if (action === 'edit-payment') return openPaymentModal(node.dataset.id);
+return legacyHandleMainClickV131(event);
+};
+handleMainInput = function (event) {
+if (event.target.id === 'campaign-kol-query') {
+state.workspace.kolQuery = event.target.value;
+const caret = event.target.selectionStart;
+const horizontalScroll = document.querySelector('.campaign-kol-scroll');
+const left = horizontalScroll ? horizontalScroll.scrollLeft : 0;
+cancelAnimationFrame(handleMainInput.campaignSearchFrame);
+handleMainInput.campaignSearchFrame = requestAnimationFrame(function () {
+const detail = document.getElementById('detail-content');
+if (!detail || !state.campaignDetail || state.campaignTab !== 'KOLs') return;
+detail.innerHTML = campaignKolsTable(state.campaignDetail.campaignKols || []);
+const nextInput = document.getElementById('campaign-kol-query');
+const nextScroll = document.querySelector('.campaign-kol-scroll');
+if (nextScroll) nextScroll.scrollLeft = left;
+if (nextInput) {
+nextInput.focus({ preventScroll: true });
+if (typeof caret === 'number') nextInput.setSelectionRange(caret, caret);
+}
+installCampaignWorkspaceStickyHeader_();
+});
+return;
+}
+return legacyHandleMainInputV131(event);
+};
+handleMainChange = function (event) {
+if (event.target.matches('[data-campaign-inline-field]')) {
+queueCampaignInlineSave(event.target);
+return;
+}
+if (event.target.id === 'performance-campaign-filter') {
+state.performanceFilters.campaign = event.target.value;
+return renderPerformance();
+}
+if (event.target.id === 'performance-platform-filter') {
+state.performanceFilters.platform = event.target.value;
+return renderPerformance();
+}
+if (event.target.matches('[data-deliverable-status]')) {
+const select = event.target;
+select.disabled = true;
+server('saveDeliverable', {
+Deliverable_ID: select.dataset.deliverableStatus,
+Campaign_KOL_ID: select.dataset.campaignKol,
+Content_Status: select.value,
+}).then(function (updated) {
+patchWorkspaceRow('deliverables', 'Deliverable_ID', enrichWorkspaceRecord(updated));
+syncCampaignKolFromRecord(updated, 'Content_Status');
+recalculateWorkspaceMetrics();
+select.disabled = false;
+select.className = 'status-select status-' + statusTone(updated.Content_Status);
+showToast('Content status updated.');
+}).catch(function (error) {
+showToast(error.message || 'Status update failed.', true);
+renderCampaignDetail();
+});
+return;
+}
+if (event.target.matches('[data-inline-status]')) {
+const select = event.target;
+const id = select.dataset.id;
+const field = select.dataset.field;
+const value = select.value;
+const previousTone = select.className;
+select.disabled = true;
+server('bulkUpdateCampaignKols', { ids: [id], field: field, value: value }).then(function (result) {
+const row = state.campaignDetail && state.campaignDetail.campaignKols.find(function (item) { return item.Campaign_KOL_ID === id; });
+if (row) row[field] = value;
+(result.deliverables || []).forEach(function (record) {
+patchWorkspaceRow('deliverables', 'Deliverable_ID', enrichWorkspaceRecord(record));
+});
+recalculateWorkspaceMetrics();
+refreshCampaignSummariesInBackground();
+select.disabled = false;
+select.className = 'status-select status-' + statusTone(value);
+showToast('Updated ' + (field === 'Booking_Status' ? 'booking status' : 'content status') + '.');
+}).catch(function (error) {
+select.disabled = false;
+select.className = previousTone;
+showToast(error.message || 'Update failed.', true);
+renderCampaignDetail();
+});
+return;
+}
+if (event.target.id === 'campaign-booking-filter') {
+state.workspace.bookingFilter = event.target.value;
+return applyCampaignWorkspaceUpdate_(state.campaignDetail);
+}
+if (event.target.id === 'campaign-kol-sort') {
+state.workspace.kolSort = event.target.value;
+persistUiState_();
+return applyCampaignWorkspaceUpdate_(state.campaignDetail);
+}
+if (event.target.id === 'campaign-content-sort') {
+state.workspace.contentSort = event.target.value;
+persistUiState_();
+return applyCampaignWorkspaceUpdate_(state.campaignDetail);
+}
+if (event.target.id === 'campaign-select-visible') {
+visibleCampaignKols().forEach(function (row) {
+if (event.target.checked) state.workspace.selectedKols.add(row.Campaign_KOL_ID);
+else state.workspace.selectedKols.delete(row.Campaign_KOL_ID);
+});
+return applyCampaignWorkspaceUpdate_(state.campaignDetail);
+}
+if (event.target.matches('[data-campaign-kol-checkbox]')) {
+const id = event.target.dataset.campaignKolCheckbox;
+if (event.target.checked) state.workspace.selectedKols.add(id);
+else state.workspace.selectedKols.delete(id);
+return applyCampaignWorkspaceUpdate_(state.campaignDetail);
+}
+return legacyHandleMainChangeV131(event);
+};
+handleModalSubmit = async function (event) {
+const form = event.target;
+// SÁU form workspace — campaign-edit, campaign-kol-edit, deliverable,
+// content-feedback, contract-workspace, payment-workspace — TỪNG được xử lý ở đây.
+// Experience.html đã tiếp nhận cả sáu: file đó load SAU nên override thắng, và
+// localForms của nó chứa đủ sáu id rồi return TRƯỚC khi delegate, nên các nhánh ở đây
+// không thể chạy. Đã chứng minh bằng máy (thứ tự include, localForms bao phủ 6/6,
+// và điểm return) rồi xoá 2026-07-30 (F27), để lần sửa sau không rơi vào bản không
+// bao giờ chạy — bản của Experience patch state tại chỗ, bản cũ ở đây reload cả
+// dashboard rồi mở lại campaign.
+//
+// Phải xoá luôn mảng workspaceForms, không chỉ các nhánh: giữ mảng lại thì với sáu id
+// đó hàm vẫn preventDefault + setFormBusy rồi rơi xuống nhánh else và hiện toast
+// "Campaign workspace updated." mà KHÔNG lưu gì — một đường im lặng còn tệ hơn.
+//
+// add-campaign-form thì vẫn thuộc lớp này (Experience không nhận id đó) và giữ
+// NGUYÊN hành vi cũ.
+if (!(form.id === 'add-campaign-form' && state.workspace.returnCampaignId)) {
+return legacyHandleModalSubmitV131(event);
+}
+event.preventDefault();
+setFormBusy(form, true);
+try {
+const payload = formToObject(form);
+payload.accountIds = Array.from(state.selectedAccounts);
+const result = await server('addAccountsToCampaign', payload);
+state.selectedAccounts.clear();
+showToast(result.added + ' KOL account(s) added; ' + result.skipped + ' skipped.');
+const campaignId = state.workspace.returnCampaignId || (state.campaignDetail && state.campaignDetail.campaign.Campaign_ID);
+state.workspace.returnCampaignId = '';
+state.workspace.preferredCampaignId = '';
+closeModal();
+await refreshDashboard();
+if (campaignId) await openCampaign(campaignId);
+} catch (error) {
+showToast(error.message || String(error), true);
+setFormBusy(form, false);
+}
+};
+openAddToCampaignModal = function () {
+if (!state.campaigns.length) {
+showToast('Create a campaign before adding KOLs.', true);
+return openCampaignModal();
+}
+const active = state.campaigns.filter(function (item) { return !['Completed','Cancelled'].includes(item.Status); });
+const preferred = state.workspace.preferredCampaignId;
+openModal('<form id="add-campaign-form" class="modal-card"><div class="modal-heading"><div><p class="eyebrow">Bulk action</p><h2>Add ' + state.selectedAccounts.size + ' KOLs to campaign</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><label>Campaign<select name="campaignId" required>' + active.map(function (campaign) {
+return '<option value="' + escapeAttr(campaign.Campaign_ID) + '"' + (campaign.Campaign_ID === preferred ? ' selected' : '') + '>' + escapeHtml(campaign.App + ' · ' + campaign.Campaign_Name + ' · ' + campaign.Market) + '</option>';
+}).join('') + '</select></label><div class="form-grid"><label>Role<select name="role">' + optionList(workspaceLists().kolRoles || ['Primary','Backup','Organic','Paid'], 'Primary') + '</select></label><label>Assign PIC<input type="email" name="picEmail" value="' + escapeAttr(state.user.Email || '') + '"></label></div><div class="modal-note"><span>✓</span><p>Duplicate accounts will be skipped. Current fees are saved as campaign snapshots.</p></div><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Add to campaign</button></div></form>');
+};
+function openCurrentCampaignDatabase() {
+const campaign = state.campaignDetail && state.campaignDetail.campaign;
+if (!campaign) return;
+state.workspace.returnCampaignId = campaign.Campaign_ID;
+state.workspace.preferredCampaignId = campaign.Campaign_ID;
+state.db.market = campaign.Market;
+navigate('database');
+}
+async function refreshCampaignWorkspace() {
+const campaignId = state.campaignDetail && state.campaignDetail.campaign.Campaign_ID;
+if (!campaignId) return;
+const latest = await server('getCampaignWorkspace', campaignId);
+applyCampaignWorkspaceUpdate_(latest);
+}
+const campaignInlineSaveQueue_ = new Map();
+function queueCampaignInlineSave(input) {
+const id = input.dataset.campaignKolId;
+const field = input.dataset.campaignInlineField;
+if (!id || !field) return;
+const rawValue = field === 'Final_Fee' || field === 'Code_Ad_Fee'
+? stripNumberFormatting(input.value)
+: input.value.trim();
+if (String(rawValue) === String(input.dataset.originalValue || '')) return;
+let queued = campaignInlineSaveQueue_.get(id);
+if (!queued) queued = { payload: { Campaign_KOL_ID: id }, inputs: {}, timer: 0, saving: false };
+queued.payload[field] = rawValue;
+queued.inputs[field] = input;
+const indicator = input.parentElement && input.parentElement.querySelector('.campaign-save-indicator');
+if (indicator) indicator.className = 'campaign-save-indicator is-saving';
+clearTimeout(queued.timer);
+queued.timer = setTimeout(function () { flushCampaignInlineSave(id); }, 250);
+campaignInlineSaveQueue_.set(id, queued);
+}
+async function flushCampaignInlineSave(id) {
+const queued = campaignInlineSaveQueue_.get(id);
+if (!queued || queued.saving) return;
+queued.saving = true;
+const payload = queued.payload;
+const inputs = queued.inputs;
+queued.payload = { Campaign_KOL_ID: id };
+queued.inputs = {};
+try {
+const updated = await server('updateCampaignKol', payload);
+patchWorkspaceRow('campaignKols', 'Campaign_KOL_ID', updated);
+Object.keys(inputs).forEach(function (field) {
+const input = inputs[field];
+if (!input || !input.isConnected) return;
+const savedValue = updated[field] == null ? payload[field] : updated[field];
+input.dataset.originalValue = String(savedValue == null ? '' : savedValue);
+input.classList.remove('is-unsaved');
+input.removeAttribute('title');
+input.removeAttribute('aria-invalid');
+if (field === 'Final_Fee' || field === 'Code_Ad_Fee') input.value = formatInputNumber(savedValue || 0);
+const indicator = input.parentElement && input.parentElement.querySelector('.campaign-save-indicator');
+if (indicator) {
+indicator.className = 'campaign-save-indicator is-saved';
+setTimeout(function () {
+if (indicator.isConnected) indicator.className = 'campaign-save-indicator';
+}, 1400);
+}
+});
+const rowNode = document.querySelector('[data-campaign-extra-row="' + CSS.escape(id) + '"]');
+const grossNode = rowNode && rowNode.querySelector('[data-gross-amount]');
+if (grossNode) grossNode.textContent = money(updated.Gross_Amount || updated.After_PIT_Fee || 0, 'VND');
+recalculateWorkspaceMetrics();
+refreshCampaignSummariesInBackground();
+queued.saving = false;
+queued.retries = 0;
+if (Object.keys(queued.payload).length > 1) {
+clearTimeout(queued.timer);
+queued.timer = setTimeout(function () { flushCampaignInlineSave(id); }, 100);
+} else {
+campaignInlineSaveQueue_.delete(id);
+}
+} catch (error) {
+queued.saving = false;
+queued.payload = Object.assign({}, payload, queued.payload);
+queued.inputs = Object.assign({}, inputs, queued.inputs);
+queued.retries = (queued.retries || 0) + 1;
+const message = error.message || String(error);
+const giveUp = queued.retries > 3;
+Object.keys(inputs).forEach(function (field) {
+const input = inputs[field];
+if (!input || !input.isConnected) return;
+// The typed value is still sitting in the box, so without an explicit marker the
+// user has every reason to believe the edit saved. Previously the only trace was
+// a 14px dot with no text and no tooltip, plus a 4s toast in the far corner.
+input.classList.add('is-unsaved');
+input.setAttribute('aria-invalid', 'true');
+input.title = (giveUp ? 'NOT SAVED — ' : 'Not saved yet, retrying — ') + message;
+const indicator = input.parentElement && input.parentElement.querySelector('.campaign-save-indicator');
+if (indicator) {
+indicator.className = 'campaign-save-indicator is-error';
+indicator.title = input.title;
+}
+});
+// Nothing used to schedule a retry. The payload was merged back into the queue
+// but was only ever flushed if the user happened to edit the same row again, so a
+// dropped connection silently lost a fee edit.
+campaignInlineSaveQueue_.set(id, queued);
+if (giveUp) {
+showToast('Not saved: ' + message + '. Your change is still on screen but was not saved — edit the field again to retry.', true);
+} else {
+clearTimeout(queued.timer);
+queued.timer = setTimeout(function () { flushCampaignInlineSave(id); }, 800 * queued.retries);
+if (queued.retries === 1) showToast(message, true);
+}
+}
+}
+
+async function saveDeliverableQuick(button, kind) {
+const editor = button.closest('[data-quick-deliverable]');
+if (!editor) return;
+const payload = {
+Deliverable_ID: button.dataset.id,
+Campaign_KOL_ID: button.dataset.campaignKol,
+};
+const current = (state.campaignDetail.deliverables || []).find(function (row) { return row.Deliverable_ID === button.dataset.id; }) || {};
+editor.querySelectorAll('[data-quick-field]').forEach(function (input) {
+const field = input.dataset.quickField;
+if (kind === 'post' && field === 'Posting_Date' && !current.Post_URL && input.value === input.dataset.originalValue) return;
+payload[field] = input.value.trim();
+});
+setActionBusy(button, true, '…');
+try {
+const updated = await server('saveDeliverable', payload);
+patchWorkspaceRow('deliverables', 'Deliverable_ID', enrichWorkspaceRecord(updated));
+syncCampaignKolFromRecord(updated, 'Content_Status');
+recalculateWorkspaceMetrics();
+applyCampaignWorkspaceUpdate_(state.campaignDetail);
+showToast(kind === 'post' ? 'Post saved and marked as Posted.' : 'Draft saved.');
+} catch (error) {
+showToast(error.message || String(error), true);
+setActionBusy(button, false, '✓');
+}
+}
+
+function positionQuickDeliverableEditor_(editor) {
+if (!editor || !editor.open) return;
+document.querySelectorAll('.quick-deliverable-editor[open]').forEach(function (other) {
+if (other !== editor) {
+other.open = false;
+other.classList.remove('opens-up');
+}
+});
+editor.classList.remove('opens-up');
+const panel = editor.querySelector(':scope > div');
+const summary = editor.querySelector(':scope > summary');
+const clippingParent = editor.closest('.table-card');
+if (!panel || !summary) return;
+const summaryRect = summary.getBoundingClientRect();
+const parentRect = clippingParent ? clippingParent.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+const lowerEdge = Math.min(window.innerHeight, parentRect.bottom);
+const upperEdge = Math.max(0, parentRect.top);
+const spaceBelow = lowerEdge - summaryRect.bottom - 10;
+const spaceAbove = summaryRect.top - upperEdge - 10;
+if (panel.offsetHeight > spaceBelow && spaceAbove > spaceBelow) {
+editor.classList.add('opens-up');
+}
+}
+
+function openContentFeedbackModal(deliverableId) {
+const row = (state.campaignDetail.deliverables || []).find(function (item) {
+return item.Deliverable_ID === deliverableId;
+});
+if (!row) return showToast('Deliverable not found.', true);
+const history = row.Feedback_History || [];
+const canEdit = canManageContentWorkspace();
+const historyMarkup = history.length
+? '<div class="feedback-history">' + history.slice().reverse().map(function (item) {
+return '<article><div><strong>Round ' + Number(item.Round || 0) + '</strong><span>' + escapeHtml(workspaceDateTime(item.Created_At) || '') + '</span></div><p>' + escapeHtml(item.Feedback || '') + '</p><small>' + escapeHtml(item.Created_By || '') + '</small></article>';
+}).join('') + '</div>'
+: '<div class="inline-empty">No feedback rounds yet.</div>';
+const formOpen = canEdit
+? '<form id="content-feedback-form"><input type="hidden" name="Deliverable_ID" value="' + escapeAttr(deliverableId) + '"><label>New feedback<textarea name="Feedback" rows="5" required placeholder="Write clear, actionable feedback for the next revision…"></textarea></label><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Add feedback round</button></div></form>'
+: '<div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Close</button></div>';
+openModal('<div class="modal-card feedback-modal"><div class="modal-heading"><div><p class="eyebrow">Content feedback</p><h2>' + escapeHtml(row.Display_Name || row.Username || row.Type || 'Deliverable') + '</h2><small>' + platformBadge(row.Platform) + ' ' + escapeHtml(row.Type || '') + '</small></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' + historyMarkup + formOpen + '</div>');
+}
+
+function workspaceDateTime(value) {
+const date = safeDate(value);
+if (!date) return '';
+return new Intl.DateTimeFormat('en-GB', {
+day: '2-digit',
+month: 'short',
+year: 'numeric',
+hour: '2-digit',
+minute: '2-digit',
+}).format(date);
+}
+
+async function runCampaignPerformanceScan(button) {
+const campaignId = state.campaignDetail && state.campaignDetail.campaign.Campaign_ID;
+if (!campaignId) return;
+setActionBusy(button, true, 'Scanning…');
+try {
+const result = await server('scanPerformanceAll', { Campaign_ID: campaignId, limit: 50 });
+await refreshCampaignWorkspace();
+showToast(result.updated
+? 'Updated ' + result.updated + ' TikTok post(s).'
+: 'No TikTok metrics were updated. Use Post Tracker CSV for Instagram, Threads and X.');
+} catch (error) {
+showToast(error.message || String(error), true);
+setActionBusy(button, false);
+}
+}
+
+async function runFetchPerformance(button) {
+const deliverableId = button.dataset.id;
+setActionBusy(button, true, '…');
+try {
+const result = await server('fetchDeliverablePerformanceV2', { Deliverable_ID: deliverableId });
+showToast('Updated: ' +
+  (typeof result.metrics.Views === 'undefined' ? 'no view count on this platform' : formatNumber(result.metrics.Views) + ' views') +
+  ', ' + formatNumber(result.metrics.Likes || 0) + ' likes.');if (state.view === 'performance') {
+state.operations.performance = null;
+renderPerformance();
+} else {
+refreshCampaignWorkspace();
+}
+} catch (error) {
+showToast(error.message || String(error), true);
+setActionBusy(button, false);
+}
+}
+function openImportPerformanceCsvModal() {
+openModal('<form id="import-performance-form" class="modal-card"><div class="modal-heading"><div><p class="eyebrow">Content operations</p><h2>Import performance CSV</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+'<div class="modal-note"><span>✓</span><p>Paste the full CSV content exported from <code>post_tracker.py</code> (required column: URL — Views/Likes/Comments/Shares/Saves columns are updated if present, skipped if not). The system auto-matches by Post URL, ignoring differences in tracking parameters.</p></div>' +
+'<label>CSV content<textarea name="csvText" rows="10" placeholder="Platform,URL,Post Date,Views,Likes,Comments,Reposts,Shares,Saves,Updated At,Notes&#10;TikTok,https://tiktok.com/@abc/video/123,2026-07-20 10:00,15000,900,50,,20,10,..."></textarea></label>' +
+'<div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Import</button></div></form>');
+}
+async function runGenerateContract(button) {
+const campaignKolId = button.dataset.id;
+const resultBox = document.getElementById('contract-generate-result');
+setActionBusy(button, true, 'Generating…');
+try {
+const result = await server('generateContractV2', { Campaign_KOL_ID: campaignKolId });
+if (resultBox) {
+resultBox.innerHTML = (result.reused ? 'Contract already exists: ' : 'Contract created: ') + escapeHtml(result.Contract_No) + ' — ' +
+'<a href="' + escapeAttr(result.Contract_URL) + '" target="_blank" rel="noopener">Xem Doc ↗</a> · ' +
+'<a href="' + escapeAttr(result.Contract_PDF_URL) + '" target="_blank" rel="noopener">Xem PDF ↗</a>';
+}
+setActionBusy(button, false, '\uD83D\uDCC4 Generate Contract');
+showToast(result.reused ? 'This KOL already has a contract.' : 'Contract created successfully.');
+if (state.contractHub) state.contractHub.data = null;
+if (state.operations) { state.operations.contractData = null; state.operations.contracts = null; }
+refreshCampaignWorkspace();
+} catch (error) {
+if (resultBox) resultBox.innerHTML = '<span style="color:#bb4c58">' + escapeHtml(error.message || String(error)) + '</span>';
+setActionBusy(button, false, '\uD83D\uDCC4 Generate Contract');
+}
+}
+async function runGenerateDeliverables(button) {
+const campaignId = state.campaignDetail.campaign.Campaign_ID;
+setActionBusy(button, true, 'Generating…');
+try {
+const result = await server('generateCampaignDeliverables', { Campaign_ID: campaignId });
+await refreshCampaignWorkspace();
+showToast(result.created + ' deliverable(s) created; ' + result.skipped + ' already existed.');
+} catch (error) {
+showToast(error.message || String(error), true);
+setActionBusy(button, false);
+}
+}
+function openCampaignEditModal() {
+const campaign = state.campaignDetail.campaign;
+const lists = workspaceLists();
+openModal('<form id="campaign-edit-form" class="modal-card workspace-modal"><div class="modal-heading"><div><p class="eyebrow">Campaign workspace</p><h2>Edit campaign</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+'<input type="hidden" name="Campaign_ID" value="' + escapeAttr(campaign.Campaign_ID) + '"><div class="form-grid"><label>Campaign name *<input name="Campaign_Name" required value="' + escapeAttr(campaign.Campaign_Name) + '"></label><label>App<select name="App">' + optionList(state.config.apps || [], campaign.App) + '</select></label></div>' +
+'<div class="form-grid"><label>Status<select name="Status">' + optionList(lists.campaignStatuses || [], campaign.Status) + '</select></label><label>Owner email<input type="email" name="Owner_Email" value="' + escapeAttr(campaign.Owner_Email || '') + '"></label></div>' +
+'<div class="form-grid"><label>Start date<input type="date" name="Start_Date" value="' + workspaceDate(campaign.Start_Date) + '"></label><label>End date<input type="date" name="End_Date" value="' + workspaceDate(campaign.End_Date) + '"></label></div>' +
+'<div class="form-grid"><label>Posting start<input type="date" name="Posting_Start" value="' + workspaceDate(campaign.Posting_Start) + '"></label><label>Posting end<input type="date" name="Posting_End" value="' + workspaceDate(campaign.Posting_End) + '"></label></div>' +
+'<div class="form-grid"><label>Target KOLs<input type="number" min="1" name="Target_KOLs" value="' + Number(campaign.Target_KOLs || 1) + '"></label><label>Budget<input type="number" min="0" name="Budget" value="' + Number(campaign.Budget || 0) + '"></label></div>' +
+'<fieldset class="platform-fieldset"><legend>Platforms</legend><div class="platform-options">' + platformChoices(String(campaign.Platforms || '').split(',').map(function (item) { return item.trim(); })) + '</div></fieldset>' +
+'<fieldset class="platform-fieldset"><legend>Marketing team with access to this campaign</legend>' + marketingTeamChoices(campaign.Assigned_Marketing || '') + '</fieldset>' +
+'<label>Objective<textarea name="Objective">' + escapeHtml(campaign.Objective || '') + '</textarea></label><label>Brief URL<input type="url" name="Brief_URL" value="' + escapeAttr(campaign.Brief_URL || '') + '"></label><label>Notes<textarea name="Notes">' + escapeHtml(campaign.Notes || '') + '</textarea></label>' +
+workspaceModalActions('Save campaign') + '</form>');
+}
+function feeHelperBlock(market) {
+const marketKey = String(market || '').toUpperCase();
+if (marketKey === 'VN') {
+return '<div class="fee-helper"><div class="fee-helper-actions"><span>Gross amount:</span><small>Net amount + code ad fee; divide by 0.9 from 5,000,000 VND</small></div><div class="fee-total-line">Budget deduction: <strong id="fee-total-preview">—</strong></div></div>';
+}
+// Mirrors CONTRACT_HUB.DEFAULTS[market].TAX_RATE on the server (ContractHub.gs).
+// VN is grossed up instead, so it has its own branch above. This used to
+// hardcode TH +3% for every non-VN market, so TW campaigns — which withhold
+// 10% — were offered Thailand's rate. An unknown market now gets no button
+// rather than a wrong one.
+const quickTaxRates = { TH: 0.03, TW: 0.1 };
+const rate = quickTaxRates[marketKey];
+const quickTax = rate
+? '<div class="fee-helper-actions"><span>Quick tax:</span><button type="button" class="ghost-button fee-quick-btn" data-action="quick-tax" data-rate="' + rate + '">' + escapeHtml(marketKey) + ' +' + (Math.round(rate * 1000) / 10) + '%</button></div>'
+: '';
+return '<div class="fee-helper">' + quickTax + '<div class="fee-total-line">Estimated total (net + tax + service): <strong id="fee-total-preview">—</strong></div></div>';
+}
+function openCampaignKolModal(id) {
+const row = state.campaignDetail.campaignKols.find(function (item) { return item.Campaign_KOL_ID === id; });
+if (!row) return;
+const lists = workspaceLists();
+const isVietnam = state.campaignDetail.campaign.Market === 'VN';
+// Mirrors the server guard in contractAmountsFor_ (net + code ad fee must be > 0).
+// A barter collaboration is deliberately not put under contract.
+const contractableNet = campaignKolNetAmountClient_(row) + numericValue(row.Code_Ad_Fee);
+const contractBlock = isVietnam
+? '<div class="form-grid"><label>Contract<select name="Contract_Status">' + optionList(lists.contractStatuses || [], row.Contract_Status) + '</select></label><label>Content<select name="Content_Status">' + optionList(lists.contentStatuses || [], row.Content_Status) + '</select></label></div>' +
+'<div class="fee-helper"><div class="fee-helper-actions"><span>Contract:</span>' +
+(contractableNet > 0
+? '<button type="button" class="ghost-button" data-action="generate-contract" data-id="' + escapeAttr(id) + '">\uD83D\uDCC4 Generate Contract</button>'
+: '<button type="button" class="ghost-button" disabled title="A barter collaboration is not put under contract">\uD83D\uDCC4 Generate Contract</button>') +
+'</div><div class="fee-total-line" id="contract-generate-result">' + (row.Contract_Status === 'Draft' || row.Contract_Status === 'Sent' || row.Contract_Status === 'Signed' ? 'Contract already exists — open the Contracts tab to view the link.' : (contractableNet > 0 ? 'No contract yet for this KOL.' : 'Net amount is 0 — a barter collaboration is not put under contract. If there is a fee, enter it above.')) + '</div></div>'
+: '<label>Content<select name="Content_Status">' + optionList(lists.contentStatuses || [], row.Content_Status) + '</select></label>';
+openModal('<form id="campaign-kol-edit-form" class="modal-card workspace-modal"><div class="modal-heading"><div><p class="eyebrow">Booking pipeline</p><h2>' + escapeHtml(row.Display_Name || row.Username || 'KOL') + '</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><input type="hidden" name="Campaign_KOL_ID" value="' + escapeAttr(id) + '">' +
+'<div class="form-grid"><label>Role<select name="Role">' + optionList(lists.kolRoles || [], row.Role) + '</select></label><label>Booking status<select name="Booking_Status">' + optionList(lists.bookingStatuses || [], row.Booking_Status) + '</select></label></div>' +
+'<label>PIC email<input type="email" name="PIC_Email" value="' + escapeAttr(row.PIC_Email || (state.campaignDetail.campaign && state.campaignDetail.campaign.Owner_Email) || '') + '"></label><div class="form-grid"><label>Quoted net amount<input type="number" min="0" name="Quoted_Fee" value="' + Number(row.Quoted_Fee || 0) + '"></label><label>Net amount<input type="number" min="0" name="Final_Fee" value="' + Number(row.Final_Fee || 0) + '"></label></div>' +
+'<label>Code ad fee<input type="number" min="0" name="Code_Ad_Fee" value="' + Number(row.Code_Ad_Fee || 0) + '"></label>' +
+'<div class="form-grid"><label>Tax<input type="number" min="0" name="Tax" value="' + Number(row.Tax || 0) + '"></label><label>Service fee<input type="number" min="0" name="Service_Fee" value="' + Number(row.Service_Fee || 0) + '"></label></div>' +
+feeHelperBlock(state.campaignDetail.campaign.Market) +
+contractBlock +
+'<div class="form-grid"><label>Payment<select name="Payment_Status">' + optionList(lists.paymentStatuses || [], row.Payment_Status) + '</select></label><label>Posting date<input type="date" name="Posting_Date" value="' + workspaceDate(row.Posting_Date) + '"></label></div>' +
+'<label>Post URL<input type="url" name="Post_URL" value="' + escapeAttr(row.Post_URL || '') + '"></label><label>Deliverable summary<textarea name="Deliverable_Summary">' + escapeHtml(row.Deliverable_Summary || '') + '</textarea></label><label>Notes<textarea name="Notes">' + escapeHtml(row.Notes || '') + '</textarea></label>' +
+workspaceModalActions('Save KOL workflow') + '</form>');
+updateFeeTotalPreview();
+}
+function updateFeeTotalPreview() {
+const preview = document.getElementById('fee-total-preview');
+if (!preview) return;
+const form = preview.closest('form');
+if (!form) return;
+const readNum = function (name) {
+const input = form.querySelector('[name="' + name + '"]');
+return input ? Number(stripNumberFormatting(input.value)) || 0 : 0;
+};
+const readRaw = function (name) {
+const input = form.querySelector('[name="' + name + '"]');
+return input ? String(input.value).trim() : '';
+};
+// Presence, not truthiness — a Net amount deliberately typed as 0 stays 0.
+const baseFee = readRaw('Final_Fee') !== '' ? readNum('Final_Fee') : readNum('Quoted_Fee');
+const market = String(state.campaignDetail && state.campaignDetail.campaign.Market || '');
+const baseWithCodeAd = baseFee + readNum('Code_Ad_Fee');
+// Dùng chung calculateContractTaxClient_ (Scripts.html) thay vì viết lại công thức
+// `>= 5000000 ? /0.9` lần thứ ba. Phần đọc input giữ nguyên vì nó phải xử lý số đã
+// được format trong form.
+const total = market === 'VN'
+? Math.round(baseWithCodeAd) + calculateContractTaxClient_(baseWithCodeAd)
+: baseFee + readNum('Tax') + readNum('Service_Fee');
+preview.textContent = formatNumber(total);
+}
+function openDeliverableModal(id) {
+const data = state.campaignDetail;
+if (!data.campaignKols.length) return showToast('Add a KOL to this campaign first.', true);
+const row = id ? data.deliverables.find(function (item) { return item.Deliverable_ID === id; }) : {};
+const lists = workspaceLists();
+openModal('<form id="deliverable-form" class="modal-card workspace-modal"><div class="modal-heading"><div><p class="eyebrow">Content operations</p><h2>' + (id ? 'Edit deliverable' : 'New deliverable') + '</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+'<input type="hidden" name="Deliverable_ID" value="' + escapeAttr(row.Deliverable_ID || '') + '"><label>Campaign KOL<select name="Campaign_KOL_ID" required>' + campaignKolOptions(row.Campaign_KOL_ID) + '</select></label>' +
+'<div class="form-grid"><label>Type<input name="Type" value="' + escapeAttr(row.Type || '') + '" placeholder="e.g. TikTok video"></label><label>Platform<select name="Platform">' + optionList(lists.platforms || [], row.Platform || '') + '</select></label></div>' +
+'<div class="form-grid"><label>Status<select name="Content_Status">' + optionList(lists.contentStatuses || [], row.Content_Status || 'Not started') + '</select></label><label>Revision round<input type="number" min="0" name="Revision_Round" value="' + Number(row.Revision_Round || 0) + '"></label></div>' +
+'<div class="form-grid"><label>Draft due<input type="date" name="Draft_Due" value="' + workspaceDate(row.Draft_Due) + '"></label><label>Draft submitted<input type="date" name="Draft_Submitted_At" value="' + workspaceDate(row.Draft_Submitted_At) + '"></label></div>' +
+'<label>Draft URL<input type="url" name="Draft_URL" value="' + escapeAttr(row.Draft_URL || '') + '"></label>' +
+'<div class="form-grid"><label>Posting date<input type="date" name="Posting_Date" value="' + workspaceDate(row.Posting_Date) + '"></label><label>Post URL<input type="url" name="Post_URL" value="' + escapeAttr(row.Post_URL || '') + '"></label></div>' +
+'<p class="form-help">Post metrics are managed in the campaign Performance tab so Content stays focused on draft review and publishing.</p>' +
+workspaceModalActions('Save deliverable') + '</form>');
+}
+function openContractModal(id) {
+const data = state.campaignDetail;
+if (!data.campaignKols.length) return showToast('Add a KOL to this campaign first.', true);
+const row = id ? data.contracts.find(function (item) { return item.Contract_ID === id; }) : {};
+const lists = workspaceLists();
+openModal('<form id="contract-workspace-form" class="modal-card workspace-modal"><div class="modal-heading"><div><p class="eyebrow">Legal operations</p><h2>' + (id ? 'Edit contract' : 'New contract') + '</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><input type="hidden" name="Contract_ID" value="' + escapeAttr(row.Contract_ID || '') + '"><label>Campaign KOL<select name="Campaign_KOL_ID" required>' + campaignKolOptions(row.Campaign_KOL_ID) + '</select></label>' +
+'<div class="form-grid"><label>Contract no.<input name="Contract_No" value="' + escapeAttr(row.Contract_No || '') + '"></label><label>Template<input name="Template_Name" value="' + escapeAttr(row.Template_Name || '') + '"></label></div><label>Status<select name="Sign_Status">' + optionList(lists.contractStatuses || [], row.Sign_Status || 'Not started') + '</select></label>' +
+'<div class="form-grid"><label>Sent date<input type="date" name="Sent_Date" value="' + workspaceDate(row.Sent_Date) + '"></label><label>Signed date<input type="date" name="Signed_Date" value="' + workspaceDate(row.Signed_Date) + '"></label></div><label>Due date<input type="date" name="Due_Date" value="' + workspaceDate(row.Due_Date) + '"></label><label>Contract URL<input type="url" name="Contract_URL" value="' + escapeAttr(row.Contract_URL || '') + '"></label><label>Owner email<input type="email" name="Owner_Email" value="' + escapeAttr(row.Owner_Email || state.user.Email || '') + '"></label><label>Notes<textarea name="Notes">' + escapeHtml(row.Notes || '') + '</textarea></label>' + workspaceModalActions('Save contract') + '</form>');
+}
+function openPaymentModal(id) {
+const data = state.campaignDetail;
+if (!data.campaignKols.length) return showToast('Add a KOL to this campaign first.', true);
+const row = id ? data.payments.find(function (item) { return item.Payment_ID === id; }) : {};
+const campaign = data.campaign;
+const lists = workspaceLists();
+const defaultKol = data.campaignKols.find(function (item) { return item.Campaign_KOL_ID === row.Campaign_KOL_ID; }) || data.campaignKols[0] || {};
+const defaultAmount = row.Amount || defaultKol.Final_Fee || defaultKol.Quoted_Fee || 0;
+openModal('<form id="payment-workspace-form" class="modal-card workspace-modal"><div class="modal-heading"><div><p class="eyebrow">Finance operations</p><h2>' + (id ? 'Edit payment' : 'New payment') + '</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><input type="hidden" name="Payment_ID" value="' + escapeAttr(row.Payment_ID || '') + '"><label>Campaign KOL<select name="Campaign_KOL_ID" required>' + campaignKolOptions(row.Campaign_KOL_ID) + '</select></label>' +
+'<div class="form-grid"><label>Amount<input type="number" min="0" name="Amount" value="' + Number(defaultAmount) + '"></label><label>Currency<select name="Currency">' + optionList(lists.currencies || [], row.Currency || defaultKol.Currency || campaign.Currency) + '</select></label></div><div class="form-grid"><label>Tax amount<input type="number" min="0" name="Tax_Amount" value="' + Number(row.Tax_Amount || defaultKol.Tax || 0) + '"></label><label>Service fee<input type="number" min="0" name="Service_Fee" value="' + Number(row.Service_Fee || defaultKol.Service_Fee || 0) + '"></label></div>' +
+'<label>Status<select name="Payment_Status">' + optionList(lists.paymentStatuses || [], row.Payment_Status || 'Not started') + '</select></label><div class="form-grid"><label>Due date<input type="date" name="Due_Date" value="' + workspaceDate(row.Due_Date) + '"></label><label>Payment date<input type="date" name="Payment_Date" value="' + workspaceDate(row.Payment_Date) + '"></label></div><label>Invoice URL<input type="url" name="Invoice_URL" value="' + escapeAttr(row.Invoice_URL || '') + '"></label><label>Owner email<input type="email" name="Owner_Email" value="' + escapeAttr(row.Owner_Email || state.user.Email || '') + '"></label><label>Notes<textarea name="Notes">' + escapeHtml(row.Notes || '') + '</textarea></label>' + workspaceModalActions('Save payment') + '</form>');
+}
+function visibleCampaignKols() {
+const rows = (state.campaignDetail && state.campaignDetail.campaignKols) || [];
+const query = state.workspace.kolQuery.toLowerCase();
+return rows.filter(function (row) {
+if (state.workspace.bookingFilter !== 'All' && row.Booking_Status !== state.workspace.bookingFilter) return false;
+return !query || [row.Username, row.Display_Name, row.Platform, row.PIC_Email, row.Categories].join(' ').toLowerCase().indexOf(query) >= 0;
+});
+}
+function campaignKolOptions(selected) {
+return state.campaignDetail.campaignKols.map(function (row) {
+const label = (row.Display_Name || row.Username || row.Account_ID) + ' · ' + (row.Platform || 'Account');
+return '<option value="' + escapeAttr(row.Campaign_KOL_ID) + '"' + (row.Campaign_KOL_ID === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+}).join('');
+}
+function workspaceLists() {
+return (state.campaignDetail && state.campaignDetail.lists) || {};
+}
+function optionList(items, selected) {
+return (items || []).map(function (item) {
+return '<option value="' + escapeAttr(item) + '"' + (String(item) === String(selected) ? ' selected' : '') + '>' + escapeHtml(item) + '</option>';
+}).join('');
+}
+function workspaceDate(value) {
+return value ? String(value).slice(0, 10) : '';
+}
+function safeWorkspaceUrl(value) {
+const url = String(value || '').trim();
+return /^https?:\/\//i.test(url) ? url : '';
+}
+function workspaceModalActions(label) {
+return '<div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">' + escapeHtml(label) + '</button></div>';
+}
+function canManageCampaignWorkspace() {
+return ['Admin', 'Booking'].indexOf(state.user.Role) >= 0;
+}
+function canManageFinanceWorkspace() {
+return ['Admin', 'Booking'].indexOf(state.user.Role) >= 0;
+}
+// Marketing team: được phép chọn KOL vào campaign, check draft và cập nhật
+// Content_Status, nhưng KHÔNG được đụng vào Booking/Contract/Fee/Payment.
+function canManageContentWorkspace() {
+return ['Admin', 'Booking', 'Marketing'].indexOf(state.user.Role) >= 0;
+}
+function canApproveCampaignKolWorkspace() {
+return ['Admin', 'Booking', 'Marketing'].indexOf(state.user.Role) >= 0;
+}
+function canEditCampaignKolNotesWorkspace() {
+return ['Admin', 'Booking', 'Marketing'].indexOf(state.user.Role) >= 0;
+}
+function setActionBusy(button, busy, label) {
+if (!button) return;
+if (!button.dataset.originalLabel) button.dataset.originalLabel = button.textContent;
+button.disabled = busy;
+button.textContent = busy ? (label || 'Working…') : button.dataset.originalLabel;
+}
+</script>

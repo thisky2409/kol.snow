@@ -1,0 +1,88 @@
+<style>
+/* ============================================================================
+ * KOL Campaign Manager v1.11.0 — AdminStyles.html
+ * ----------------------------------------------------------------------------
+ * PASTE AS: new Apps Script HTML file named  AdminStyles.html
+ * Include in Index.html <head>, AFTER ExperienceStyles (see 9_Index.html.txt).
+ *
+ * Only the classes the new Admin / danger-zone / performance UI introduces.
+ * Uses the existing :root tokens from Styles.html — no new colours invented.
+ * ========================================================================== */
+
+/* --- Settings > Team panel ------------------------------------------------ */
+.admin-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: var(--gap-block); }
+.admin-panel-head h2 { margin-bottom: 0; font-size: var(--fs-xl); }
+.admin-panel-head .primary-button { flex: none; }
+
+.admin-tabs { display: flex; gap: 4px; margin-bottom: 6px; border-bottom: 1px solid var(--line); }
+.admin-tabs button { min-height: 32px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 0 11px; color: var(--muted); font-size: var(--fs-sm); font-weight: 800; letter-spacing: .02em; }
+.admin-tabs button:hover { color: var(--ink); }
+.admin-tabs button.active { border-bottom-color: var(--blue); color: var(--blue); }
+
+/* .settings-row div is a grid in Styles.html — restore the avatar row layout. */
+.admin-user-row .creator-cell { display: flex; align-items: center; gap: 9px; }
+.admin-user-row .creator-cell > div { display: grid; gap: 2px; }
+.admin-user-row.is-inactive { opacity: .55; }
+.admin-user-row strong { display: flex; align-items: center; gap: 6px; font-size: var(--fs-md); }
+.admin-user-row small { font-size: var(--fs-xs); }
+.admin-you { border-radius: 5px; background: #eaf1ff; padding: 1px 5px; color: #245dd2; font-size: var(--fs-micro); font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+
+.admin-panel-foot { display: flex; justify-content: flex-end; margin-top: 15px; border-top: 1px solid var(--line); padding-top: 14px; }
+
+/* --- Audit log ----------------------------------------------------------- */
+.admin-filters { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
+.admin-filters select { min-height: 32px; max-width: 165px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; padding: 0 9px; color: var(--text); font-size: var(--fs-sm); font-weight: 600; }
+.admin-filters .ghost-button { min-height: 32px; font-size: var(--fs-sm); }
+.admin-audit-scroll { max-height: 460px; overflow: auto; }
+.admin-audit-scroll .data-table th { position: sticky; top: 0; z-index: 1; background: #f7f9fd; }
+.admin-audit-scroll .data-table td { vertical-align: top; }
+.admin-details { max-width: 320px; }
+.admin-details small { display: block; overflow-wrap: anywhere; color: var(--body-sub); line-height: 1.5; }
+
+/* --- Shared form affordances --------------------------------------------- */
+.admin-hint { margin-top: 6px; color: var(--muted); font-size: var(--fs-xs); line-height: 1.55; }
+.admin-hint code { border-radius: 4px; background: #eff1f5; padding: 1px 4px; font-size: var(--fs-xs); }
+.admin-error { margin-top: 12px; border-radius: 8px; background: #ffe9eb; padding: 9px 11px; color: #bb4c58; font-size: var(--fs-sm); font-weight: 600; line-height: 1.5; }
+.admin-check { display: flex !important; align-items: flex-start; gap: 8px; margin-top: 13px; border: 1px solid #f1ccd1; border-radius: 9px; background: #fff6f7; padding: 11px; }
+.admin-check input { margin-top: 1px; }
+.admin-check span { color: #a2545e; font-size: var(--fs-sm); font-weight: 600; line-height: 1.45; }
+
+/* --- Danger zone / delete modal ------------------------------------------ */
+.danger-zone { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px; border: 1px solid #f1ccd1; background: #fffafb; padding: var(--card-pad); }
+.danger-zone h2 { margin-bottom: 6px; font-size: var(--fs-xl); color: #b34955; }
+.danger-zone .copy { max-width: 620px; color: var(--muted); font-size: var(--fs-md); line-height: 1.55; }
+.danger-zone .danger-button { min-height: 38px; padding: 0 17px; }
+.danger-button:hover { border-color: #e5a7af; background: #ffeef0; }
+
+.danger-list { margin: 13px 0 0; border-radius: 9px; background: #fff6f7; padding: 12px 12px 12px 27px; color: #a2545e; }
+.danger-list li { margin-bottom: 5px; font-size: var(--fs-sm); font-weight: 600; line-height: 1.5; }
+.danger-list li:last-child { margin-bottom: 0; }
+.danger-list strong { color: #8f3f49; }
+
+#danger-form .copy { margin-top: 4px; font-size: var(--fs-md); }
+#danger-form label { display: block; margin-top: 14px; color: var(--text); font-size: var(--fs-sm); font-weight: 700; }
+#danger-form label code { border-radius: 4px; background: #eff1f5; padding: 1px 5px; color: var(--ink); font-size: var(--fs-sm); }
+#danger-form input[name="confirm"] { width: 100%; min-height: 38px; margin-top: 6px; border: 1px solid var(--line-strong); border-radius: 8px; padding: 0 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--fs-md); }
+#danger-form input[name="confirm"]:focus { border-color: var(--danger); outline: none; }
+
+/* --- Performance automation panel (Phase 3) ------------------------------ */
+.auto-status { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 13px 0; }
+.auto-status > div { border: 1px solid var(--line); border-radius: 10px; background: #fbfcfe; padding: 11px var(--card-pad-tight); }
+/* Cung bo voi .data-table th: cung vai tro nhan cot 8px in hoa. */
+.auto-status small { display: block; margin-bottom: 4px; color: var(--label); font-size: var(--fs-micro); font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.auto-status strong { color: var(--ink-strong); font-size: var(--fs-lg); }
+.auto-log { max-height: 210px; overflow: auto; margin-top: var(--gap-block); border: 1px solid var(--line); border-radius: 9px; background: #fbfcfe; padding: 10px var(--card-pad-tight); }
+/* Cung mau va co chu voi .data-table td. */
+.auto-log div { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; color: var(--body-sub); font-size: var(--fs-xs); }
+.auto-log div + div { border-top: 1px dashed #eef1f5; }
+.webhook-key { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.webhook-key input { flex: 1; min-height: 34px; border: 1px solid var(--line-strong); border-radius: 8px; padding: 0 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--fs-sm); }
+
+/* --- Responsive ---------------------------------------------------------- */
+@media (max-width: 900px) {
+  .danger-zone { grid-template-columns: 1fr; }
+  .danger-zone .danger-button { justify-self: start; }
+  .admin-panel-head { flex-direction: column; }
+  .admin-details { max-width: none; }
+}
+</style>

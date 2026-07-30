@@ -1,0 +1,1328 @@
+<script>
+'use strict';
+// Phản chiếu APP.VERSION của server, gán khi boot (F31). KHÔNG hardcode ở đây nữa:
+// bản cũ ghim '1.10.0' trong khi server là '1.11.0', nên con số trên màn Settings nói
+// sai bản đang chạy. `let` là cố ý — nó được gán một lần trong bootstrap.
+let UI_VERSION = '';
+// Nhãn version dùng chung. Trả về chuỗi RỖNG khi chưa biết version, để tiêu đề không
+// bao giờ hiện ra một chữ "· v" trơ trọi trước lúc bootstrap xong.
+function versionLabel() { return UI_VERSION ? ' · v' + UI_VERSION : ''; }
+// APP_LOGOS nằm ở Logos.html, và file đó được SINH RA từ scripts/build-logos.py — đừng
+// sửa tay. Lịch sử ngắn: ~46 KB base64 PNG ngay trong file này (F21) -> tách ra
+// Logos.html -> SVG monogram -> và giờ là logo thật, ~20 KB JPEG, sau khi chủ project
+// bổ sung file gốc trong "Logo apps/". Logos.html PHẢI nạp trước file này vì
+// applyStaticLogos() bên dưới chạy ngay lúc parse và cần APP_LOGOS.SNOW.
+const METRIC_ICONS = Object.freeze({
+// The four Performance cards used to mix an arrow, a colour EMOJI, a heart glyph and
+// a literal "%". The emoji rendered in full colour at a different weight to
+// everything around it. Same reasoning as the note below: use real SVG so every card
+// matches regardless of font or OS.
+views: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.6 12 5.6 21.5 12 21.5 12 18 18.4 12 18.4 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3.1"/></svg>',
+livePosts: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 16.5L16.5 7.5"/><path d="M9.5 7.5h7v7"/></svg>',
+engagements: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19.6s-6.9-4.4-6.9-9.2A4 4 0 0 1 12 7.9a4 4 0 0 1 6.9 2.5c0 4.8-6.9 9.2-6.9 9.2z"/></svg>',
+engagementRate: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="17.6" y1="6.4" x2="6.4" y2="17.6"/><circle cx="8.1" cy="8.1" r="2.2"/><circle cx="15.9" cy="15.9" r="2.2"/></svg>',
+// Icon SVG đồng nhất (cùng stroke-width, cùng kích thước) thay cho các ký tự
+// Unicode trước đây (◎ ◌ ✓ !) vốn hiển thị không đều nhau giữa các font/OS —
+// đặc biệt ◌ (dotted circle) gần như vô hình trên nhiều máy. (feedback ảnh 3)
+campaigns: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg>',
+pipeline: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="8" r="3"/><circle cx="16" cy="9" r="2.4"/><path d="M2.8 19c.5-3 2.7-5 5.7-5s5.2 2 5.7 5"/><path d="M14.5 14.3c2.4.3 4.1 2.1 4.6 4.7"/></svg>',
+confirmed: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>',
+attention: '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><line x1="12" y1="7.5" x2="12" y2="13"/><circle cx="12" cy="16.3" r="0.9" fill="currentColor" stroke="none"/></svg>',
+});
+const state = {
+view: 'dashboard',
+user: null,
+config: null,
+dashboard: null,
+campaigns: [],
+shortlists: [],
+deliverables: [],
+selectedAccounts: new Set(),
+topMarketFilter: 'All',
+db: { query: '', market: 'All', platform: 'All', app: 'All', status: 'All', sortBy: 'Followers', sortOrder: 'desc', offset: 0, pageSize: 100, total: 0, rows: [], loading: false },
+campaignDetail: null,
+campaignTab: 'Overview',
+shortlistDetailData: null,
+operations: { contracts: null, contractData: null, payments: null, performance: null, history: null, settings: null },
+// Offset trang cho các danh sách Operations (F22). Trước đây server cắt cứng 500 dòng
+// và trả về một mảng trần, nên UI không biết còn gì bị cắt — người dùng tìm hợp đồng
+// cũ sẽ kết luận nó không tồn tại. Giữ offset ở đây để đổi trang không mất bộ lọc.
+operationsPaging: { contracts: 0, payments: 0, history: 0 },
+notifications: { rows: [], unread: 0 },
+performanceFilters: { campaign: 'All', platform: 'All', picked: false },
+requestToken: 0,
+sync: {
+revision: '0',
+refreshing: false,
+pending: false,
+pendingWorkspace: null,
+timer: null,
+localTimer: null,
+visibilityBound: false,
+},
+};
+const main = document.getElementById('main');
+const modalRoot = document.getElementById('modal-root');
+const selectionBar = document.getElementById('selection-bar');
+let searchTimer = null;
+// QUAN TRỌNG: các tên dưới đây được ĐỊNH NGHĨA LẠI (gán lại, không phải khai
+// báo) ở Experience.html — vì file đó load SAU nên "override" bản gốc. Nhưng
+// muốn gán lại 1 biến (x = function(){}) mà không dùng let/const/var, biến đó
+// PHẢI được khai báo từ trước — nếu không, ở chế độ 'use strict' (đang bật ở
+// đầu file này), dòng gán sẽ NÉM LỖI "x is not defined" ngay khi trang tải,
+// và toàn bộ phần còn lại của Experience.html sẽ không chạy được.
+// Bug này đã lặp lại nhiều lần trong quá trình sửa — ĐỪNG XOÁ khối này.
+let renderDatabase;
+let loadAccounts;
+let renderDatabaseResults;
+let accountRow;
+let updateSelectionBar;
+// renderSettings ĐÃ TỪNG có một bản cài đặt ở đây. Nó KHÔNG THỂ chạy: AdminUi.html
+// gán lại renderSettings mà không capture bản trước (khác với handleMainClick /
+// handleModalSubmit / renderCampaignTab mà nó có capture), nên chuỗi đứt tại đúng
+// một điểm và bản gốc thành code chết. Inventory ở docs/f28-render-settings-inventory.md
+// đối chiếu từng panel: Market templates là bản sao trung thực, còn Team access của
+// AdminUi là TẬP CHA thực sự — bản gốc chỉ render Name/Email/Role read-only, không có
+// Market, Active, avatar, số đếm, Edit, Deactivate, Reassign hay tab Audit. Không mất
+// chức năng nào, nên đã xoá 2026-07-30 (F28).
+// Giữ lại DÒNG KHAI BÁO này là bắt buộc, cùng lý do như khối trên: AdminUi gán lại tên
+// này, và dưới 'use strict' gán vào một tên chưa khai báo sẽ NÉM LỖI ngay khi tải trang,
+// làm chết toàn bộ phần còn lại của AdminUi.html.
+let renderSettings;
+// Mười hai tên dưới đây cũng TỪNG có bản cài đặt ở đây (hoặc ở CampaignWorkspace với
+// runBulkBookingUpdate). Tất cả đều bị một file load SAU gán lại mà KHÔNG capture, nên
+// vì cùng tên global, mọi caller lúc chạy đều lấy bản cuối — 128 dòng kia là bất khả
+// đạt. Xoá 2026-07-30 (F37). Đây KHÔNG phải thay đổi hành vi: code bất khả đạt không
+// thể chạy, nên không có gì để mất; điều đã mất thì mất từ lúc bản ghi đè xuất hiện.
+// Giữ dòng khai báo là bắt buộc — xem lý do 'use strict' ở khối trên.
+let openCampaign;
+let renderCampaignDetail;
+let campaignKolsTable;
+let deliverablesTable;
+let documentsTable;
+let openAddToCampaignModal;
+let statusBadge;
+let formatNumber;
+let compactNumber;
+let renderShortlistDetailView;
+let renderCalendar;
+let runBulkBookingUpdate;
+applyStaticLogos();
+document.addEventListener('DOMContentLoaded', init);
+// Đặt logo SNOW vào màn hình boot và brand mark ở sidebar. Chạy ngay lúc parse, KHÔNG
+// chờ DOMContentLoaded: màn hình boot hiện trước khi bootstrap xong, nên chờ sẽ thấy
+// chữ "S" nhấp một cái rồi mới thành logo.
+//
+// Hàm này từng bị xoá khi F21 chuyển sang SVG monogram — lúc đó nó vô nghĩa, vì
+// .boot-logo/.brand-mark đã tự render chữ "S" trong ô gradient xanh từ Styles.html.
+// Nay có logo thật thì nó có nghĩa lại. Nếu chỉ muốn logo ở tile campaign mà giữ chữ
+// "S" ở sidebar thì xoá đúng một dòng gọi ở trên.
+function applyStaticLogos() {
+['.boot-logo', '.brand-mark'].forEach(function (selector) {
+const node = document.querySelector(selector);
+if (!node) return;
+node.classList.add('image-logo');
+node.innerHTML = '<img src="' + APP_LOGOS.SNOW + '" alt="SNOW">';
+});
+}
+async function init() {
+bindShellEvents();
+try {
+const data = await server('getBootstrapData');
+state.user = data.user;
+state.config = data.config;
+UI_VERSION = (data.config && data.config.appVersion) || '';
+state.dashboard = data.dashboard;
+state.campaigns = data.campaigns || [];
+state.shortlists = data.shortlists || [];
+state.deliverables = data.deliverables || [];
+state.notifications = data.notifications || { rows: [], unread: 0 };
+state.sync.revision = data.revision || '0';
+await restoreUiState_();
+hydrateShell();
+document.getElementById('boot').classList.add('is-hidden');
+document.getElementById('app').classList.remove('is-hidden');
+render();
+startRealtimeSync_();
+} catch (error) {
+console.error('Init error:', error);
+// Nếu app đã hiện (boot đã ẩn) thì báo lỗi ngay trong khung nội dung chính
+// thay vì ghi vào màn hình boot đã ẩn — tránh tình trạng trang trắng im lặng
+// không rõ lý do.
+const appShown = !document.getElementById('app').classList.contains('is-hidden');
+if (appShown) showPageError(error); else renderFatal(error);
+}
+}
+function bindShellEvents() {
+document.querySelector('.sidebar-nav').addEventListener('click', function (event) {
+const button = event.target.closest('[data-view]');
+if (!button) return;
+navigate(button.dataset.view);
+});
+document.getElementById('mobile-menu').addEventListener('click', function () {
+document.getElementById('sidebar').classList.toggle('open');
+});
+document.getElementById('global-search').addEventListener('keydown', function (event) {
+if (event.key !== 'Enter') return;
+state.db.query = event.target.value.trim();
+state.db.offset = 0;
+navigate('database');
+});
+document.addEventListener('keydown', function (event) {
+if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+event.preventDefault();
+document.getElementById('global-search').focus();
+}
+if (event.key === 'Escape') closeModal();
+});
+main.addEventListener('click', handleMainClick);
+main.addEventListener('input', handleMainInput);
+main.addEventListener('change', handleMainChange);
+main.addEventListener('focusout', function (event) {
+if (event.target.matches('input[data-kol-inline-field]')) saveKolInlineField(event.target);
+});
+main.addEventListener('compositionend', function (event) {
+if (typeof handleMainInput === 'function') handleMainInput(event);
+});
+main.addEventListener('keydown', function (event) {
+if (event.key === 'Enter' && event.target.matches('input[data-kol-inline-field], input[data-campaign-inline-field]')) {
+event.preventDefault();
+event.target.blur();
+}
+});
+main.addEventListener('focusout', function () {
+setTimeout(applyPendingRealtimeSync_, 350);
+});
+modalRoot.addEventListener('click', handleModalClick);
+modalRoot.addEventListener('change', handleModalChange);
+modalRoot.addEventListener('submit', handleModalSubmit);
+document.getElementById('top-notification-button').addEventListener('click', openNotificationCenter);
+document.getElementById('top-market-select').addEventListener('change', function (event) {
+state.topMarketFilter = event.target.value;
+render();
+});
+}
+async function openNotificationCenter() {
+try {
+state.notifications = await server('getNotifications', { limit: 30 });
+updateNotificationBadge();
+const rows = state.notifications.rows || [];
+openModal('<div class="modal-card notification-modal"><div class="modal-heading"><div><p class="eyebrow">Notifications</p><h2>Campaign updates</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+(rows.length ? '<div class="notification-list">' + rows.map(function (row) {
+return '<button type="button" class="notification-item' + (isTrueClient(row.Read) ? '' : ' is-unread') + '" data-modal-action="open-notification" data-id="' + escapeAttr(row.Notification_ID) + '" data-campaign="' + escapeAttr(row.Campaign_ID || '') + '"><span></span><div><strong>' + escapeHtml(row.Title || row.Type || 'Notification') + '</strong><p>' + escapeHtml(row.Message || '') + '</p><small>' + escapeHtml(workspaceDateTimeClient(row.Created_At)) + '</small></div></button>';
+}).join('') + '</div>' : '<div class="inline-empty">No notifications yet.</div>') +
+'<div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Close</button></div></div>');
+} catch (error) {
+showToast(error.message || 'Notifications could not be loaded.', true);
+}
+}
+function isTrueClient(value) {
+return value === true || String(value || '').toLowerCase() === 'true';
+}
+function workspaceDateTimeClient(value) {
+const date = new Date(value);
+if (isNaN(date.getTime())) return '';
+return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
+}
+function updateNotificationBadge() {
+const dot = document.getElementById('notification-dot');
+if (!dot) return;
+const count = Number((state.notifications && state.notifications.unread) || 0);
+dot.classList.toggle('is-hidden', count === 0);
+dot.title = count ? (count + ' unread notification(s)') : 'No unread notifications';
+}
+function hydrateShell() {
+document.getElementById('brand-company').textContent = state.config.companyName || 'SNOW';
+document.getElementById('brand-workspace').textContent = state.config.workspaceName || 'Creator Operations';
+document.getElementById('user-name').textContent = state.user.Name || state.user.Email || 'User';
+document.getElementById('user-role').textContent = [state.user.Role, state.user.Market].filter(Boolean).join(' · ');
+document.getElementById('user-avatar').textContent = initials(state.user.Name || state.user.Email || 'U');
+updateNotificationBadge();
+document.querySelectorAll('.nav-item').forEach(function (item) {
+item.classList.toggle('active', item.dataset.view === state.view);
+});
+// Marketing team không được xem phần Operations (Contracts/Payments/History) —
+// quy tắc rõ ràng, không chỉ ẩn UI mà backend cũng chặn (xem getOperations_/
+// getCollaborationHistory trong Code.gs) để phòng trường hợp gõ thẳng URL/gọi API.
+if (state.user.Role === 'Marketing') {
+document.querySelectorAll('.nav-group-operations').forEach(function (node) { node.classList.add('is-hidden'); });
+}
+}
+function navigate(view) {
+state.view = view;
+state.campaignDetail = null;
+// Rời campaign thì bulk bar phải mất theo — nó là phần tử top-level nên không bị
+// main.innerHTML xoá hộ như trước.
+if (typeof updateCampaignBulkBar_ === 'function') updateCampaignBulkBar_();
+persistUiState_();
+document.querySelectorAll('.nav-item').forEach(function (item) {
+item.classList.toggle('active', item.dataset.view === view);
+});
+document.getElementById('sidebar').classList.remove('open');
+render();
+window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function render() {
+try {
+renderInner_();
+} catch (error) {
+// Lỗi khi render bị "nuốt" mất trước đây vì boot screen đã ẩn lúc lỗi xảy ra
+// — người dùng chỉ thấy trang trắng, không biết gì đang sai. Giờ báo lỗi rõ
+// ràng ngay trong khung nội dung chính, kèm chi tiết lỗi để dễ debug.
+console.error('Render error:', error);
+showPageError(error);
+}
+}
+function renderInner_() {
+updateSelectionBar();
+const operationsViews = ['contracts', 'payments', 'history'];
+if (state.user.Role === 'Marketing' && operationsViews.indexOf(state.view) >= 0) {
+state.view = 'dashboard';
+showToast('Marketing team does not have access to the Operations section.', true);
+return renderDashboard();
+}
+if (state.view === 'dashboard') return renderDashboard();
+if (state.view === 'campaigns') return state.campaignDetail ? renderCampaignDetail() : renderCampaigns();
+if (state.view === 'database') return renderDatabase();
+if (state.view === 'shortlists') return renderShortlists();
+if (state.view === 'calendar') return renderCalendar();
+if (state.view === 'performance') return renderPerformance();
+if (state.view === 'contracts') return renderOperations('contracts');
+if (state.view === 'payments') return renderOperations('payments');
+if (state.view === 'history') return renderHistory();
+if (state.view === 'settings') return renderSettings();
+}
+function renderDashboard() {
+const data = state.dashboard || { metrics: {}, marketCounts: {}, bookingStatusCounts: {}, activeCampaigns: [], upcoming: [] };
+const m = data.metrics || {};
+const funnelOrder = ['Picked', 'Approved', 'Contacted', 'Negotiating', 'Confirmed'];
+const funnelMax = Math.max(1, ...funnelOrder.map(function (key) { return Number(data.bookingStatusCounts[key] || 0); }));
+const totalMarkets = Number(data.marketCounts.VN || 0) + Number(data.marketCounts.TH || 0) + Number(data.marketCounts.TW || 0);
+const vnPct = totalMarkets ? Math.round((data.marketCounts.VN || 0) / totalMarkets * 100) : 34;
+const thPct = totalMarkets ? Math.round((data.marketCounts.TH || 0) / totalMarkets * 100) : 34;
+const donutSecond = Math.min(100, vnPct + thPct);
+const now = new Date();
+const todayLabel = now.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' });
+main.innerHTML = pageHeading(todayLabel, 'Dashboard', 'Here’s what needs attention across your KOL campaigns today.',
+'<button class="ghost-button" data-action="database">Open database</button><button class="primary-button" data-action="new-campaign">＋ New campaign</button>') +
+'<section class="metric-grid">' +
+metric('Active campaigns', m.activeCampaigns || 0, 'Campaigns with Active status', 'blue', METRIC_ICONS.campaigns) +
+metric('KOLs in pipeline', m.kolsInPipeline || 0, 'Across active campaigns', 'violet', METRIC_ICONS.pipeline) +
+metric('Confirmed KOLs', m.confirmedKols || 0, 'Across active campaigns', 'mint', METRIC_ICONS.confirmed) +
+metric('Needs attention', m.needsAttention || 0, 'Revision, contract or payment', 'amber', METRIC_ICONS.attention) +
+'</section>' +
+'<section class="dashboard-grid">' +
+'<article class="card"><div class="card-head"><div><p class="eyebrow">Booking funnel</p><h2>Campaign pipeline</h2></div><button data-action="campaigns">View all</button></div>' +
+funnelOrder.map(function (label, index) {
+const value = Number(data.bookingStatusCounts[label] || 0);
+const tones = ['blue', 'blue', 'violet', 'pink', 'mint'];
+return '<div class="funnel-row"><span>' + label + '</span>' + progress(value / funnelMax * 100, tones[index]) + '<strong>' + formatNumber(value) + '</strong></div>';
+}).join('') +
+'<div class="pipeline-foot"><span><i class="dot dot-mint"></i>' + (m.kolsInPipeline ? Math.round((m.confirmedKols || 0) / m.kolsInPipeline * 100) : 0) + '% confirmation rate</span><button data-action="campaigns">View pipeline →</button></div>' +
+'</article>' +
+'<article class="card"><div class="card-head"><div><p class="eyebrow">Distribution</p><h2>KOLs by market</h2></div></div><div class="donut-wrap"><div class="donut" style="--vn:' + vnPct + '%;--th:' + donutSecond + '%"><div><strong>' + formatNumber(totalMarkets) + '</strong><small>Total accounts</small></div></div></div><div class="legend"><span><i class="dot dot-blue"></i>Vietnam<strong>' + formatNumber(data.marketCounts.VN || 0) + '</strong></span><span><i class="dot dot-violet"></i>Thailand<strong>' + formatNumber(data.marketCounts.TH || 0) + '</strong></span><span><i class="dot dot-amber"></i>Taiwan<strong>' + formatNumber(data.marketCounts.TW || 0) + '</strong></span></div></article>' +
+'<article class="card"><div class="card-head"><div><p class="eyebrow">Schedule</p><h2>Upcoming milestones</h2></div><button data-action="calendar">Calendar</button></div>' +
+(data.upcoming && data.upcoming.length ? data.upcoming.slice(0, 5).map(deadlineRow).join('') : miniEmpty('No upcoming deadlines yet.')) +
+'</article>' +
+'</section>' +
+'<section class="section-space"><div class="section-head"><div><h2>Active campaigns</h2><p>Progress, spend and booking health at a glance.</p></div><button data-action="campaigns">View all campaigns →</button></div>' +
+(function () {
+const filtered = (data.activeCampaigns || []).filter(function (c) { return state.topMarketFilter === 'All' || c.Market === state.topMarketFilter; });
+if (!filtered.length) return emptyState('◎', 'No campaign yet', 'Create your first campaign, then pick accounts from the KOL Database.', '<button class="primary-button" data-action="new-campaign">Create campaign</button>');
+return '<div class="campaign-grid">' + filtered.slice(0, 3).map(campaignCard).join('') + '</div>';
+})() +
+'</section>';
+}
+function renderCampaigns() {
+const canManage = ['Admin', 'Booking'].includes(state.user.Role);
+const filtered = state.campaigns.filter(function (c) { return state.topMarketFilter === 'All' || c.Market === state.topMarketFilter; });
+main.innerHTML = pageHeading('Campaign portfolio', 'Campaigns', 'Create workspaces for each app, market and posting window.',
+canManage ? '<button class="primary-button" data-action="new-campaign">＋ New campaign</button>' : '') +
+(filtered.length ? '<div class="campaign-grid">' + filtered.map(campaignCard).join('') + '</div>' : emptyState('◎', state.campaigns.length ? 'No campaigns in this market' : 'No campaigns created', canManage ? 'Create a campaign before assigning KOL accounts.' : 'No campaign is currently available to your account.', canManage ? '<button class="primary-button" data-action="new-campaign">Create campaign</button>' : ''));
+}
+// Lưu ý: renderDatabase(), loadAccounts(), renderDatabaseResults(), accountRow(),
+// và updateSelectionBar() bản THẬT (đang chạy) đều nằm trong Experience.html —
+// file đó load SAU nên override lại các hàm cùng tên định nghĩa ở đây. Các bản
+// cũ từng nằm ở đây đã bị xoá hẳn (không phải chỉ vô hiệu hoá) để tránh sửa
+// nhầm vào code không chạy — lỗi này đã xảy ra nhiều lần trong quá trình sửa.
+function renderShortlists() {
+const canManage = ['Admin', 'Booking', 'Marketing'].includes(state.user.Role);
+main.innerHTML = pageHeading('Sourcing layer', 'Shortlists', 'Save working pools before creators are approved and linked to a campaign.',
+canManage ? '<button class="primary-button" data-action="new-shortlist">＋ New shortlist</button>' : '') +
+(state.shortlists.length ? '<div class="shortlist-grid">' + state.shortlists.map(shortlistCard).join('') + '</div>' : emptyState('◇', 'No shortlists yet', canManage ? 'Create a shortlist for each market or monthly sourcing cycle.' : 'No shortlist is currently available to your account.', canManage ? '<button class="primary-button" data-action="new-shortlist">Create shortlist</button>' : ''));
+}
+// Thanh phân trang dùng chung cho Operations và History. Cùng lớp .pagination và cùng
+// hình dạng nút với bảng Database, để hai chỗ nhìn giống nhau.
+// `scope` đi vào data-scope để một handler xử lý được cả ba danh sách.
+function operationsPagination(scope, page) {
+const total = Number(page.total || 0);
+const offset = Number(page.offset || 0);
+const pageSize = Number(page.pageSize || 0);
+const shown = Number((page.rows || []).length);
+if (!total) return '';
+const atStart = offset === 0;
+const atEnd = offset + pageSize >= total;
+const btn = function (action, label, disabled) {
+return '<button data-action="' + action + '" data-scope="' + escapeAttr(scope) + '"' +
+(disabled ? ' disabled' : '') + '>' + label + '</button>';
+};
+return '<div class="pagination"><span>Showing <strong>' + (offset + 1) + '–' +
+(offset + shown) + '</strong> of <strong>' + formatNumber(total) + '</strong></span><div>' +
+btn('ops-first', '⇤ First', atStart) + btn('ops-prev', '← Previous', atStart) +
+btn('ops-next', 'Next →', atEnd) + btn('ops-last', 'Last ⇥', atEnd) + '</div></div>';
+}
+async function renderOperations(type) {
+const title = type === 'contracts' ? 'Contracts' : 'Payments';
+const copy = type === 'contracts' ? 'Generate and track contracts for Vietnam campaigns.' : 'Track due dates, final fees and finance status across campaigns.';
+const headingActions = type === 'contracts' ? '<button class="primary-button" data-action="open-generate-contract">＋ Generate contract</button>' : '';
+main.innerHTML = pageHeading('Legal & finance', title, copy, headingActions) + '<div class="skeleton"></div>';
+try {
+const offset = Number(state.operationsPaging[type] || 0);
+if (type === 'contracts') {
+if (!state.operations.contractData) {
+state.operations.contractData = await server('getContractOperationsData', { offset: offset });
+}
+state.operations.contracts = state.operations.contractData.contracts || [];
+} else if (!state.operations[type]) {
+state.operations[type] = await server('getOperations', { type: type, offset: offset });
+}
+if (state.view !== type) return;
+const isContracts = type === 'contracts';
+// Cả hai endpoint nay trả { rows, total, offset, pageSize }; với contracts thì mảng
+// nằm ở .contracts và tổng ở .contractsTotal.
+const page = isContracts
+? {
+rows: state.operations.contracts || [],
+total: state.operations.contractData.contractsTotal,
+offset: state.operations.contractData.offset,
+pageSize: state.operations.contractData.pageSize,
+}
+: (state.operations[type] || { rows: [], total: 0, offset: 0, pageSize: 0 });
+const rows = page.rows || [];
+main.innerHTML = pageHeading('Legal & finance', title, copy, headingActions) + (isContracts && state.operations.contractData && state.operations.contractData.candidates.length ?
+'<section class="operation-notice"><strong>' + state.operations.contractData.candidates.length + ' Vietnam KOL(s) are ready for contract review</strong><span>Open Generate contract to check legal information and create documents.</span></section>' : '') + (rows.length ?
+'<section class="table-card card"><div class="table-summary"><span><strong>' + rows.length + '</strong> of <strong>' + formatNumber(Number(page.total || 0)) + '</strong> records</span></div><div class="table-scroll"><table class="data-table"><thead><tr><th>Creator</th><th>Campaign</th><th>' + (isContracts ? 'Contract No.' : 'Amount') + '</th><th>Status</th><th>' + (isContracts ? 'Due date' : 'Payment date') + '</th><th>Owner</th></tr></thead><tbody>' + rows.map(function (row) {
+const status = isContracts ? row.Sign_Status : row.Payment_Status;
+return '<tr><td><strong>' + escapeHtml(row.Display_Name || row.Creator_Name || row.Creator_ID || '—') + '</strong><small class="cell-sub">' + escapeHtml(row.Username ? '@' + row.Username : '') + '</small></td><td>' + escapeHtml(row.Campaign_Name || row.Campaign_ID || '—') + '</td><td><strong>' + (isContracts ? escapeHtml(row.Contract_No || '—') : money(row.Amount, row.Currency)) + '</strong></td><td>' + statusBadge(status) + '</td><td>' + escapeHtml(isContracts ? row.Due_Date || '—' : row.Payment_Date || row.Due_Date || '—') + '</td><td>' + escapeHtml(row.Owner_Email || '—') + (isContracts ? '<button class="mini-edit-button operation-row-action" data-action="view-contract-detail" data-id="' + escapeAttr(row.Contract_ID) + '">View</button>' : '') + '</td></tr>';
+}).join('') + '</tbody></table></div>' + operationsPagination(type, page) + '</section>' : emptyState(isContracts ? '▤' : '$', 'No ' + title.toLowerCase() + ' yet', 'Records created from campaign workspaces will appear here.', ''));
+} catch (error) { showPageError(error); }
+}
+/**
+* Đổi trang cho một danh sách Operations: đặt offset mới, xoá bản cache của đúng danh
+* sách đó rồi render lại. Chỉ xoá cache của scope đang đổi trang, để hai tab kia không
+* phải gọi lại server.
+*/
+async function setOperationsPage(scope, nextOffset) {
+const total = scope === 'contracts'
+? Number((state.operations.contractData || {}).contractsTotal || 0)
+: Number((state.operations[scope] || {}).total || 0);
+const pageSize = scope === 'contracts'
+? Number((state.operations.contractData || {}).pageSize || 0)
+: Number((state.operations[scope] || {}).pageSize || 0);
+const maxOffset = Math.max(0, total - 1);
+const target = nextOffset === 'last'
+? Math.max(0, (Math.ceil(total / Math.max(1, pageSize)) - 1) * pageSize)
+: Math.max(0, Math.min(maxOffset, Number(nextOffset)));
+state.operationsPaging[scope] = target;
+if (scope === 'contracts') state.operations.contractData = null;
+else state.operations[scope] = null;
+if (scope === 'history') return renderHistory();
+return renderOperations(scope);
+}
+
+async function renderPerformance() {
+main.innerHTML = pageHeading('Creator performance', 'Performance', 'Track post results by campaign across TikTok, Instagram, Threads and X.',
+'<button class="ghost-button" data-action="refresh-performance">Refresh data</button>') + '<div class="skeleton"></div>';
+try {
+if (!state.operations.performance) state.operations.performance = await server('getPerformanceOverview');
+if (state.view !== 'performance') return;
+const data = state.operations.performance || { rows: [], summary: {} };
+const rows = data.rows || [];
+const campaignOptions = (data.campaigns || []).map(function (campaign) {
+return { value: campaign.Campaign_ID, label: (campaign.App ? campaign.App + ' · ' : '') + campaign.Campaign_Name };
+});
+const platforms = Array.from(new Set(rows.map(function (row) { return row.Platform; }).filter(Boolean))).sort();
+// Ban dau chi hien MOT campaign. Voi hang chuc campaign thi trang Performance
+// dai hang chuc bang lien tiep, khong doc duoc gi. Chon campaign co bai dang
+// MOI NHAT: server da sort rows theo Posting_Date giam dan, nen rows[0] chinh
+// la no. Nguoi dung van chon duoc "All campaigns" - chi la phai chu dong chon,
+// va lua chon do duoc giu nho co picked (chi tu dong dat dung MOT lan/phien).
+if (!state.performanceFilters.picked) {
+  state.performanceFilters.picked = true;
+  const newestCampaignId = rows.length ? String(rows[0].Campaign_ID || '') : '';
+  // Chi dat khi campaign do that su co trong danh sach chon, khong thi select
+  // se khong highlight gi ma bang lai bi loc - trong nhu bi mat du lieu.
+  if (newestCampaignId && campaignOptions.some(function (item) { return item.value === newestCampaignId; })) {
+    state.performanceFilters.campaign = newestCampaignId;
+  }
+}
+const filteredRows = rows.filter(function (row) {
+return (state.performanceFilters.campaign === 'All' || row.Campaign_ID === state.performanceFilters.campaign) &&
+(state.performanceFilters.platform === 'All' || row.Platform === state.performanceFilters.platform);
+});
+const summary = summarizePerformanceClient(filteredRows);
+main.innerHTML = pageHeading('Creator performance', 'Performance', 'Track post results by campaign across TikTok, Instagram, Threads and X.',
+'<button class="ghost-button" data-action="refresh-performance">Refresh data</button>') +
+'<section class="card performance-filter-bar"><label>Campaign<select id="performance-campaign-filter"><option value="All">All campaigns</option>' + campaignOptions.map(function (item) { return '<option value="' + escapeAttr(item.value) + '"' + (state.performanceFilters.campaign === item.value ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>'; }).join('') + '</select></label><label>Platform<select id="performance-platform-filter"><option value="All">All platforms</option>' + platforms.map(function (platform) { return '<option' + (state.performanceFilters.platform === platform ? ' selected' : '') + '>' + escapeHtml(platform) + '</option>'; }).join('') + '</select></label><span>' + filteredRows.length + ' post(s)</span></section>' +
+performanceMetricCards_(summary) + performanceTable(filteredRows);
+} catch (error) { showPageError(error); }
+}
+
+async function runPerformanceScan(button) {
+setActionBusy(button, true, 'Scanning…');
+try {
+const result = await server('scanPerformanceAll', { limit: 25 });
+state.operations.performance = null;
+await renderPerformance();
+const message = result.updated
+? 'Updated ' + result.updated + ' of ' + result.scanned + ' TikTok post(s).'
+: (result.scanned ? 'No TikTok metrics changed.' : 'No TikTok posts are ready to scan.');
+showToast(message, !result.updated && !!result.failed);
+} catch (error) {
+showToast(error.message || String(error), true);
+setActionBusy(button, false);
+}
+}
+
+function summarizePerformanceClient(rows) {
+const summary = { Posts: rows.length, Live_Posts: 0, Views: 0, Likes: 0, Comments: 0, Reposts: 0, Shares: 0, Saves: 0, Engagements: 0, Engagement_Rate: 0 };
+rows.forEach(function (row) {
+if (row.Post_URL || row.Content_Status === 'Posted') summary.Live_Posts += 1;
+['Views','Likes','Comments','Reposts','Shares','Saves'].forEach(function (field) { summary[field] += Number(row[field] || 0); });
+});
+summary.Engagements = summary.Likes + summary.Comments + summary.Reposts + summary.Shares + summary.Saves;
+summary.Engagement_Rate = summary.Views ? summary.Engagements / summary.Views * 100 : 0;
+return summary;
+}
+
+/** Trim helper for values that arrive from the sheet as '' or a Date. */
+function cleanTextClient_(value) {
+return String(value === null || typeof value === 'undefined' ? '' : value).trim();
+}
+// Bon the so lieu nay dung o CA HAI cho: tab Performance va tab Performance cua
+// tung campaign. Truoc day moi ben tu dung rieng, nen ben campaign van con icon
+// Unicode/emoji cu (mui ten, trai tim, dau %) trong khi tab Performance da doi
+// sang METRIC_ICONS, nhan the khac nhau ("Views" vs "Total views"), va tu cong
+// mot bo tong rieng. Cung mot campaign ma hai man hinh trinh bay khac nhau.
+// Gio chi con MOT nguon, va summarizePerformanceClient cung dung chung.
+function performanceMetricCards_(summary) {
+return '<section class="metric-grid performance-metrics">' +
+metric('Live posts', summary.Live_Posts || 0, (summary.Posts || 0) + ' deliverables tracked', 'blue', METRIC_ICONS.livePosts) +
+metric('Total views', compactNumber(summary.Views || 0), formatNumber(summary.Views || 0) + ' views', 'violet', METRIC_ICONS.views) +
+metric('Engagements', compactNumber(summary.Engagements || 0), 'Likes, comments, reposts, shares and saves', 'mint', METRIC_ICONS.engagements) +
+// Khong co luot xem thi ER khong xac dinh. In "0.00%" trong nhu da do duoc va
+// ket qua bang 0 - cung ly do bang da doi sang dau gach ngang.
+metric('Engagement rate', summary.Views ? Number(summary.Engagement_Rate || 0).toFixed(2) + '%' : '\u2014', 'Based on total views', 'amber', METRIC_ICONS.engagementRate) +
+'</section>';
+}
+function performanceTable(rows) {
+if (!rows.length) return emptyState('↗', 'No performance data yet', 'Add post URLs in campaign Content, then import or fetch performance metrics.', '');
+const groups = {};
+rows.forEach(function (row) {
+const key = row.Campaign_ID || 'Unassigned';
+if (!groups[key]) groups[key] = [];
+groups[key].push(row);
+});
+return Object.keys(groups).map(function (campaignId) {
+const campaignRows = groups[campaignId];
+const first = campaignRows[0] || {};
+const groupSummary = summarizePerformanceClient(campaignRows);
+return '<section class="table-card card performance-table campaign-performance-group"><div class="table-summary"><span><strong>' + escapeHtml((first.App ? first.App + ' · ' : '') + (first.Campaign_Name || campaignId)) + '</strong><small>' + campaignRows.length + ' post(s) · ' + compactNumber(groupSummary.Views) + ' views · ' + groupSummary.Engagement_Rate.toFixed(2) + '% ER</small></span></div><div class="table-scroll"><table class="data-table"><thead><tr><th>Creator</th><th>Platform</th><th>Post date</th><th>Views</th><th>Likes</th><th>Comments</th><th>Reposts</th><th>Shares</th><th>Saves</th><th>ER</th><th>Updated</th><th></th></tr></thead><tbody>' +
+campaignRows.map(function (row) {
+const engagements = Number(row.Likes || 0) + Number(row.Comments || 0) + Number(row.Reposts || 0) + Number(row.Shares || 0) + Number(row.Saves || 0);
+// An empty cell means nobody has measured this post. Rendering it through
+// formatNumber(x || 0) printed a hard "0", which is indistinguishable from a post
+// that genuinely got zero views — and after the team-API work most empty cells are
+// exactly that: a metric the platform does not publish, deliberately left unwritten.
+// A real 0 still prints as 0; only an absent value becomes a dash.
+const perfNum = function (value) {
+return (value === '' || value === null || typeof value === 'undefined')
+? '<span class="cell-sub">—</span>'
+: formatNumber(value);
+};
+const measured = Number(row.Views || 0) > 0;
+const postHref = safeWorkspaceUrl(row.Post_URL); const postUrl = postHref ? '<a href="' + escapeAttr(postHref) + '" target="_blank" rel="noopener">Post ↗</a>' : '—';
+return '<tr><td><strong>' + escapeHtml(row.Display_Name || row.Username || '—') + '</strong><small class="cell-sub">' + escapeHtml(row.Username ? '@' + row.Username : '') + '</small></td><td>' + platformBadge(row.Platform) + '</td><td>' +
+escapeHtml(workspaceDate(row.Posting_Date) || '—') + '</td><td><strong>' + perfNum(row.Views) + '</strong></td><td>' + perfNum(row.Likes) + '</td><td>' + perfNum(row.Comments) + '</td><td>' + perfNum(row.Reposts) + '</td><td>' + perfNum(row.Shares) + '</td><td>' + perfNum(row.Saves) + '</td><td><strong>' +
+// Engagement rate is undefined without views, so it shows a dash rather than a
+// confident 0.00%. And the Updated column used to fall back to row.Updated_At,
+// which made a never-measured post look like it had been fetched at the moment
+// someone last edited the record.
+(measured ? (engagements / Number(row.Views) * 100).toFixed(2) + '%' : '<span class="cell-sub">—</span>') +
+'</strong></td><td><small class="cell-sub">' +
+(cleanTextClient_(row.Performance_Updated_At)
+? escapeHtml(workspaceDateTimeClient(row.Performance_Updated_At)) +
+(row.Performance_Source ? '<br>' + escapeHtml(row.Performance_Source) : '')
+: 'Never measured') + '</small></td><td><div class="row-actions">' + postUrl + '</div></td></tr>';
+}).join('') + '</tbody></table></div></section>';
+}).join('');
+}
+
+function openGenerateContractModal() {
+const data = state.operations.contractData || { candidates: [] };
+const candidates = data.candidates || [];
+if (!candidates.length) {
+showToast('There are no KOLs waiting for contract generation.', true);
+return;
+}
+openModal('<form id="generate-contract-operation-form" class="modal-card contract-operation-modal"><div class="modal-heading"><div><p class="eyebrow">Vietnam contracts</p><h2>Generate contract</h2><small>Only confirmed KOLs in VN campaigns are shown.</small></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+'<label>Select campaign KOL<select name="Campaign_KOL_ID" required>' + candidates.map(function (item) {
+const suffix = item.Ready ? 'Ready' : 'Missing: ' + item.Missing_Fields.join(', ');
+return '<option value="' + escapeAttr(item.Campaign_KOL_ID) + '"' + (item.Ready ? '' : ' disabled') + '>' +
+escapeHtml((item.App ? item.App + ' · ' : '') + item.Campaign_Name + ' · ' + (item.Display_Name || item.Username) + ' · ' + item.Platform + ' — ' + suffix) + '</option>';
+}).join('') + '</select></label><div class="contract-candidate-list">' +
+candidates.map(function (item) {
+return '<div class="contract-candidate ' + (item.Ready ? 'is-ready' : 'is-blocked') + '"><div><strong>' + escapeHtml(item.Display_Name || item.Username) +
+'</strong><small>' + escapeHtml(item.App + ' · ' + item.Campaign_Name + ' · ' + item.Platform) + '</small></div><span>' +
+(item.Ready ? 'Ready' : escapeHtml('Missing ' + item.Missing_Fields.join(', '))) + '</span></div>';
+}).join('') + '</div><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button"' +
+(candidates.some(function (item) { return item.Ready; }) ? '' : ' disabled') + '>Generate contract</button></div></form>');
+}
+
+function openContractDetail(contractId, tab) {
+const data = state.operations.contractData || { contracts: [] };
+const row = (data.contracts || []).find(function (item) { return item.Contract_ID === contractId; });
+if (!row) return showToast('Contract could not be found.', true);
+const activeTab = tab || 'overview';
+const performance = row.Performance || [];
+const summary = row.Performance_Summary || {};
+const links = [safeWorkspaceUrl(row.Contract_URL) ? '<a class="ghost-button link-button" href="' + escapeAttr(safeWorkspaceUrl(row.Contract_URL)) + '" target="_blank" rel="noopener">Open Doc ↗</a>' : '',
+safeWorkspaceUrl(row.Contract_PDF_URL) ? '<a class="ghost-button link-button" href="' + escapeAttr(safeWorkspaceUrl(row.Contract_PDF_URL)) + '" target="_blank" rel="noopener">Open PDF ↗</a>' : ''].join('');
+const overview = '<div class="contract-overview-grid"><div><small>Campaign</small><strong>' + escapeHtml((row.App ? row.App + ' · ' : '') + row.Campaign_Name) +
+'</strong></div><div><small>Creator</small><strong>' + escapeHtml(row.Display_Name || row.Username || '—') + '</strong></div><div><small>Status</small>' +
+statusBadge(row.Sign_Status) + '</div><div><small>Due date</small><strong>' + escapeHtml(workspaceDate(row.Due_Date) || '—') + '</strong></div></div><div class="contract-links">' + links + '</div>';
+const performanceContent = '<section class="contract-performance-summary"><span><small>Views</small><strong>' + formatNumber(summary.Views || 0) +
+'</strong></span><span><small>Engagements</small><strong>' + formatNumber(summary.Engagements || 0) + '</strong></span><span><small>ER</small><strong>' +
+Number(summary.Engagement_Rate || 0).toFixed(2) + '%</strong></span></section>' +
+(performance.length ? '<div class="table-scroll"><table class="data-table"><thead><tr><th>Platform</th><th>Post</th><th>Views</th><th>Likes</th><th>Comments</th><th>Shares</th></tr></thead><tbody>' +
+performance.map(function (item) { return '<tr><td>' + platformBadge(item.Platform) + '</td><td>' + escapeHtml(workspaceDate(item.Posting_Date) || '—') +
+'</td><td>' + formatNumber(item.Views || 0) + '</td><td>' + formatNumber(item.Likes || 0) + '</td><td>' + formatNumber(item.Comments || 0) +
+'</td><td>' + formatNumber(item.Shares || 0) + '</td></tr>'; }).join('') + '</tbody></table></div>' :
+'<div class="inline-empty">No post performance is linked to this contract yet.</div>');
+openModal('<div class="modal-card contract-detail-modal" data-contract-detail="' + escapeAttr(contractId) + '"><div class="modal-heading"><div><p class="eyebrow">Contract details</p><h2>' +
+escapeHtml(row.Contract_No || 'Contract') + '</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><nav class="detail-tabs contract-tabs"><button type="button" class="' +
+(activeTab === 'overview' ? 'active' : '') + '" data-modal-action="contract-tab" data-tab="overview">Overview</button><button type="button" class="' +
+(activeTab === 'performance' ? 'active' : '') + '" data-modal-action="contract-tab" data-tab="performance">Performance <span>' + performance.length +
+'</span></button></nav><div class="contract-tab-content">' + (activeTab === 'performance' ? performanceContent : overview) + '</div></div>');
+}
+async function renderHistory() {
+main.innerHTML = pageHeading('Creator intelligence', 'Collaboration History', 'Completed posts become reusable KOL knowledge automatically.', '') + '<div class="skeleton"></div>';
+try {
+if (!state.operations.history) {
+state.operations.history = await server('getCollaborationHistory', { offset: Number(state.operationsPaging.history || 0) });
+}
+if (state.view !== 'history') return;
+const page = state.operations.history || { rows: [], total: 0, offset: 0, pageSize: 0 };
+const rows = page.rows || [];
+main.innerHTML = pageHeading('Creator intelligence', 'Collaboration History', 'Completed posts become reusable KOL knowledge automatically.', '') + (rows.length ?
+'<section class="table-card card"><div class="table-summary"><span><strong>' + rows.length + '</strong> of <strong>' + formatNumber(Number(page.total || 0)) + '</strong> completed collaborations</span></div><div class="table-scroll"><table class="data-table"><thead><tr><th>Creator</th><th>Campaign</th><th>Market</th><th>Platform</th><th>Net amount</th><th>Content</th><th>Payment</th><th>Post</th></tr></thead><tbody>' + rows.map(function (row) { return '<tr><td><div class="creator-cell">' + avatar(row.Creator_Name || row.Username, row.Market) + '<div><strong>' + escapeHtml(row.Username || row.Creator_Name || '—') + '</strong><small>' + escapeHtml(row.Creator_Name || '') + '</small></div></div></td><td>' + escapeHtml((row.App ? row.App + ' · ' : '') + row.Campaign_Name) + '</td><td>' + marketBadge(row.Market) + '</td><td>' + escapeHtml(row.Platform || '—') + '</td><td><strong>' + money(campaignKolNetAmountClient_(row), row.Currency) + '</strong></td><td>' + statusBadge(row.Content_Status) + '</td><td>' + statusBadge(row.Payment_Status) + '</td><td>' + (safeWorkspaceUrl(row.Post_URL) ? '<a href="' + escapeAttr(safeWorkspaceUrl(row.Post_URL)) + '" target="_blank" rel="noopener">Open ↗</a>' : '—') + '</td></tr>'; }).join('') + '</tbody></table></div>' + operationsPagination('history', page) + '</section>' : emptyState('↺', 'No completed collaborations yet', 'Posted or paid campaign KOLs will appear here automatically.', ''));
+} catch (error) { showPageError(error); }
+}
+function renderCampaignTab(data) {
+const c = data.campaign;
+const m = data.metrics;
+if (state.campaignTab === 'Overview') {
+const target = Number(c.Target_KOLs || 0);
+const confirmPct = target ? Math.round(m.confirmed / target * 100) : 0;
+const spendPct = Number(c.Budget || 0) ? Math.round(m.committed / Number(c.Budget) * 100) : 0;
+return '<section class="metric-grid">' + metric('Confirmed', m.confirmed + '/' + (target || '—'), confirmPct + '% of target', 'mint', '✓') + metric('Committed budget', spendPct + '%', money(m.committed, c.Currency), 'blue', '◌') + metric('Drafts in review', m.draftsInReview, 'Content requiring action', 'amber', '✎') + metric('Posts live', m.postsLive, 'Completed deliverables', 'violet', '↗') + '</section><section class="detail-grid"><article class="card"><div class="card-head"><div><p class="eyebrow">Booking health</p><h2>Campaign pipeline</h2></div></div>' + ['Picked','Approved','Contacted','Negotiating','Confirmed'].map(function (status, index) { const value = data.campaignKols.filter(function (item) { return item.Booking_Status === status; }).length; return '<div class="funnel-row"><span>' + status + '</span>' + progress(m.totalKols ? value / m.totalKols * 100 : 0, index === 4 ? 'mint' : index > 1 ? 'violet' : 'blue') + '<strong>' + value + '</strong></div>'; }).join('') + '</article><article class="card"><div class="card-head"><div><p class="eyebrow">Campaign cost</p><h2>Budget health</h2></div></div><strong class="budget-number">' + money(m.committed, c.Currency) + '</strong><p class="budget-sub">of ' + money(c.Budget, c.Currency) + ' · Confirmed KOLs only' + (c.Market === 'VN' ? ' · Gross amount deducted' : '') + '</p><div style="margin-top:15px">' + progress(spendPct, c.Market === 'TH' ? 'violet' : c.Market === 'TW' ? 'amber' : 'blue') + '</div><div class="remaining-box"><span>Remaining budget</span><strong>' + money(m.remaining, c.Currency) + '</strong></div><div class="remaining-box pipeline-total-box"><span>Pipeline total (Picked → Confirmed) · for tracking, not deducted from budget</span><strong>' + money(m.pipelineTotal, c.Currency) + '</strong></div></article></section>';
+}
+if (state.campaignTab === 'KOLs') return campaignKolsTable(data.campaignKols);
+if (state.campaignTab === 'Content') return deliverablesTable(data.deliverables);
+if (state.campaignTab === 'Contracts') return documentsTable(data.contracts, true);
+if (state.campaignTab === 'Payments') return documentsTable(data.payments, false);
+return '';
+}
+function handleMainClick(event) {
+const actionNode = event.target.closest('[data-action]');
+if (!actionNode) return;
+const action = actionNode.dataset.action;
+if (['dashboard','campaigns','database','shortlists','calendar','performance','contracts','payments','history','settings'].includes(action)) return navigate(action);
+if (action === 'open-generate-contract') return openGenerateContractModal();
+if (action === 'view-contract-detail') return openContractDetail(actionNode.dataset.id, 'overview');
+// Phân trang Operations / History (F22). data-scope cho biết đang đổi trang danh sách nào.
+if (['ops-first', 'ops-prev', 'ops-next', 'ops-last'].includes(action)) {
+const scope = actionNode.dataset.scope;
+const current = Number(state.operationsPaging[scope] || 0);
+const pageSize = Number((scope === 'contracts'
+? (state.operations.contractData || {}).pageSize
+: (state.operations[scope] || {}).pageSize) || 0) || 100;
+if (action === 'ops-first') return setOperationsPage(scope, 0);
+if (action === 'ops-prev') return setOperationsPage(scope, current - pageSize);
+if (action === 'ops-next') return setOperationsPage(scope, current + pageSize);
+return setOperationsPage(scope, 'last');
+}
+if (action === 'refresh-performance') {
+state.operations.performance = null;
+return renderPerformance();
+}
+if (action === 'scan-performance') return runPerformanceScan(actionNode);
+if (action === 'new-campaign') return openCampaignModal();
+if (action === 'new-shortlist') return openShortlistModal();
+if (action === 'import-kols') return openKolImportModal();
+if (action === 'edit-template') return openTemplateModal(actionNode.dataset.market);
+if (action === 'view-campaign') return openCampaign(actionNode.dataset.id);
+if (action === 'back-campaigns') { state.campaignDetail = null; return renderCampaigns(); }
+if (action === 'detail-tab') { state.campaignTab = actionNode.dataset.tab; return renderCampaignDetail(); }
+if (action === 'market-filter') { state.db.market = actionNode.dataset.market; state.db.offset = 0; return renderDatabase(); }
+if (action === 'db-first') { state.db.offset = 0; return loadAccounts(); }
+if (action === 'db-prev') { state.db.offset = Math.max(0, state.db.offset - state.db.pageSize); return loadAccounts(); }
+if (action === 'db-next') { state.db.offset += state.db.pageSize; return loadAccounts(); }
+if (action === 'db-last') { state.db.offset = Math.max(0, Math.floor((Math.max(0, state.db.total) - 1) / state.db.pageSize) * state.db.pageSize); return loadAccounts(); }
+if (action === 'retry-database') return loadAccounts();
+if (event.target.id === 'db-sort-order') {
+state.db.sortOrder = state.db.sortOrder === 'desc' ? 'asc' : 'desc';
+state.db.offset = 0;
+loadAccounts();
+return;
+}
+if (action === 'add-kol-direct') return openAddKolDirectModal();
+if (action === 'edit-kol-row') return openEditKolModal(actionNode.dataset.id);
+if (action === 'view-shortlist-detail') return openShortlistDetail(actionNode.dataset.id);
+if (action === 'back-shortlists') { state.shortlistDetailData = null; return renderShortlists(); }
+}
+function handleMainInput(event) {
+if (event.target.id !== 'db-query') return;
+state.db.query = event.target.value;
+state.db.offset = 0;
+clearTimeout(searchTimer);
+searchTimer = setTimeout(loadAccounts, 320);
+}
+function handleMainChange(event) {
+if (event.target.id === 'status-filter') {
+state.db.status = event.target.value;
+state.db.offset = 0;
+loadAccounts();
+return;
+}
+if (event.target.id === 'platform-filter') {
+state.db.platform = event.target.value;
+state.db.offset = 0;
+loadAccounts();
+return;
+}
+if (event.target.id === 'app-filter') {
+state.db.app = event.target.value;
+state.db.offset = 0;
+loadAccounts();
+return;
+}
+if (event.target.id === 'db-sort-by') {
+state.db.sortBy = event.target.value;
+state.db.offset = 0;
+loadAccounts();
+return;
+}
+if (event.target.id === 'select-visible') {
+state.db.rows.forEach(function (row) {
+if (event.target.checked) state.selectedAccounts.add(row.Account_ID);
+else state.selectedAccounts.delete(row.Account_ID);
+});
+renderDatabaseResults();
+return;
+}
+if (event.target.matches('[data-account-checkbox]')) {
+const id = event.target.dataset.accountCheckbox;
+if (event.target.checked) state.selectedAccounts.add(id);
+else state.selectedAccounts.delete(id);
+const row = event.target.closest('tr');
+if (row) row.classList.toggle('row-selected', event.target.checked);
+updateSelectionBar();
+}
+}
+function handleModalClick(event) {
+if (event.target.classList.contains('modal-backdrop') || event.target.closest('[data-close-modal]')) { closeModal(); return; }
+const notification = event.target.closest('[data-modal-action="open-notification"]');
+if (notification) {
+const campaignId = notification.dataset.campaign;
+server('markNotificationRead', { Notification_ID: notification.dataset.id }).then(function () {
+state.notifications.unread = Math.max(0, Number(state.notifications.unread || 0) - (notification.classList.contains('is-unread') ? 1 : 0));
+updateNotificationBadge();
+closeModal();
+if (campaignId) return openCampaign(campaignId);
+return null;
+}).catch(function (error) { showToast(error.message || String(error), true); });
+return;
+}
+const contractTab = event.target.closest('[data-modal-action="contract-tab"]');
+if (contractTab) {
+const detail = contractTab.closest('[data-contract-detail]');
+if (detail) openContractDetail(detail.dataset.contractDetail, contractTab.dataset.tab);
+return;
+}
+const quickTaxButton = event.target.closest('[data-action="quick-tax"]');
+if (quickTaxButton) {
+const form = quickTaxButton.closest('form');
+if (!form) return;
+const rate = Number(quickTaxButton.dataset.rate || 0);
+const readNum = function (name) {
+const input = form.querySelector('[name="' + name + '"]');
+return input ? Number(stripNumberFormatting(input.value)) || 0 : 0;
+};
+const baseFee = readNum('Final_Fee') || readNum('Quoted_Fee');
+const taxInput = form.querySelector('[name="Tax"]');
+if (taxInput) {
+taxInput.value = formatInputNumber(String(Math.round(baseFee * rate)));
+if (typeof updateFeeTotalPreview === 'function') updateFeeTotalPreview();
+}
+}
+}
+function handleModalChange(event) {
+if (event.target.id === 'campaign-market') applyCampaignTemplate(event.target.value);
+}
+async function handleModalSubmit(event) {
+event.preventDefault();
+const form = event.target;
+setFormBusy(form, true);
+try {
+if (form.id === 'campaign-form') {
+const payload = formToObject(form);
+const campaign = await server('createCampaign', payload);
+state.campaigns.unshift(campaign);
+await refreshDashboard();
+closeModal();
+showToast('Campaign created successfully.');
+navigate('campaigns');
+}
+if (form.id === 'shortlist-form') {
+const shortlist = await server('createShortlist', formToObject(form));
+shortlist.KOL_Count = 0;
+shortlist.Approved_Count = 0;
+state.shortlists.unshift(shortlist);
+closeModal();
+showToast('Shortlist created successfully.');
+renderShortlists();
+}
+if (form.id === 'add-kol-direct-form') {
+await server('createKolRecord', formToObject(form));
+closeModal();
+showToast('KOL account added to system.');
+loadAccounts();
+}
+if (form.id === 'edit-kol-form') {
+await server('updateKolDatabaseRecord', formToObject(form));
+closeModal();
+showToast('KOL profile updated.');
+loadAccounts();
+}
+if (form.id === 'add-campaign-form') {
+const payload = formToObject(form);
+payload.accountIds = Array.from(state.selectedAccounts);
+const result = await server('addAccountsToCampaign', payload);
+state.selectedAccounts.clear();
+await refreshDashboard();
+closeModal();
+showToast(result.added + ' KOL account(s) added; ' + result.skipped + ' skipped.');
+renderDatabaseResults();
+}
+if (form.id === 'template-form') {
+const template = await server('updateCampaignTemplate', formToObject(form));
+if (!state.config.templates) state.config.templates = {};
+state.config.templates[template.market] = template;
+if (state.operations.settings && state.operations.settings.config) {
+if (!state.operations.settings.config.templates) state.operations.settings.config.templates = {};
+state.operations.settings.config.templates[template.market] = template;
+}
+closeModal();
+showToast(template.market + ' campaign template updated.');
+renderSettings();
+}
+if (form.id === 'kol-import-preview-form') {
+const payload = formToObject(form);
+const preview = await server('previewKolImport', payload);
+openKolImportPreview(preview, payload);
+}
+if (form.id === 'kol-import-run-form') {
+const result = await server('importKolsFromGoogleSheet', formToObject(form));
+state.selectedAccounts.clear();
+state.db.offset = 0;
+await refreshDashboard();
+closeModal();
+showToast(result.accountsCreated + ' accounts imported, ' + result.accountsUpdated + ' updated, ' + result.accountsSkipped + ' skipped.');
+renderDatabase();
+}
+} catch (error) {
+showToast(error.message || String(error), true);
+setFormBusy(form, false);
+}
+}
+function openCampaignModal() {
+const apps = (state.config.apps || ['SNOW']).map(function (app) { return '<option>' + escapeHtml(app) + '</option>'; }).join('');
+const defaultMarket = ['VN','TH','TW'].includes(state.config.defaultMarket) ? state.config.defaultMarket : 'VN';
+const template = campaignTemplate(defaultMarket);
+const markets = ['VN','TH','TW'].map(function (market) { return '<option' + (market === defaultMarket ? ' selected' : '') + '>' + market + '</option>'; }).join('');
+openModal('<form id="campaign-form" class="modal-card"><div class="modal-heading"><div><p class="eyebrow">New workspace</p><h2>Create campaign</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><label>Campaign name<input name="Campaign_Name" required placeholder="e.g. Sunshine Magic"></label><div class="form-grid"><label>App<select name="App">' + apps + '</select></label><label>Market<select name="Market" id="campaign-market">' + markets + '</select></label></div><fieldset class="platform-fieldset"><legend>Platforms</legend><p>Select every platform included in this campaign.</p><div class="platform-options" id="campaign-platform-options">' + platformChoices(template.platforms) + '</div></fieldset><div class="form-grid"><label>Start date<input type="date" name="Start_Date"></label><label>End date<input type="date" name="End_Date"></label></div><div class="form-grid"><label>Posting start<input type="date" name="Posting_Start"></label><label>Posting end<input type="date" name="Posting_End"></label></div><div class="form-grid"><label>Target KOLs<input type="number" min="1" name="Target_KOLs" value="' + escapeAttr(template.targetKols || 20) + '"></label><label>Budget<input type="number" min="0" name="Budget" placeholder="' + escapeAttr(template.currency || currencyForMarket(defaultMarket)) + '"></label></div><label>Objective<textarea name="Objective" placeholder="What should this campaign achieve?"></textarea></label><fieldset class="platform-fieldset"><legend>Marketing team with access to this campaign</legend>' + marketingTeamChoices('') + '</fieldset><label>Brief URL<input type="url" name="Brief_URL" placeholder="https://"></label><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Create campaign</button></div></form>');
+}
+function openKolImportModal() {
+const sourceId = state.config.kolSourceSpreadsheetId || '';
+const sourceUrl = sourceId ? 'https://docs.google.com/spreadsheets/d/' + sourceId + '/edit' : '';
+openModal('<form id="kol-import-preview-form" class="modal-card import-modal"><div class="modal-heading"><div><p class="eyebrow">Creator database</p><h2>Import KOLs</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><div class="modal-note"><span>⇧</span><p>Paste the Google Sheets link containing the <strong>Vietnam</strong>, <strong>Thailand</strong> and <strong>Taiwan</strong> tabs. The importer automatically creates one creator and separate platform accounts.</p></div><label>Source Google Sheet URL<input type="url" name="sourceUrl" required value="' + escapeAttr(sourceUrl) + '" placeholder="https://docs.google.com/spreadsheets/d/…/edit"></label><fieldset class="platform-fieldset"><legend>Markets to import</legend><input type="hidden" name="markets" value=""><div class="platform-options import-market-options"><label class="platform-choice"><input type="checkbox" name="markets" value="VN" checked><span>VN · Vietnam</span></label><label class="platform-choice"><input type="checkbox" name="markets" value="TH" checked><span>TH · Thailand</span></label><label class="platform-choice"><input type="checkbox" name="markets" value="TW" checked><span>TW · Taiwan</span></label></div></fieldset><div class="import-rules"><span>✓ Split TikTok, Instagram, Threads and X</span><span>✓ Match duplicates by URL or username</span><span>✓ Hide Black list records from campaign picking</span></div><p class="form-help">Excel (.xlsx) cannot be read directly by Apps Script. Open the file in Google Sheets first, then paste its Google Sheets URL here.</p><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Preview import</button></div></form>');
+}
+function openKolImportPreview(preview, payload) {
+const totals = preview.totals || {};
+const marketRows = (preview.markets || []).map(function (market) {
+return '<span>' + marketBadge(market.market) + '<strong>' + formatNumber(market.sourceRows || 0) + ' creators</strong><small>' + formatNumber(market.accountsFound || 0) + ' platform accounts</small></span>';
+}).join('');
+const warnings = (preview.warnings || []).length
+? '<div class="import-warning"><strong>Review before importing</strong><ul>' + preview.warnings.map(function (warning) { return '<li>' + escapeHtml(warning) + '</li>'; }).join('') + '</ul></div>'
+: '';
+const sample = (preview.sample || []).map(function (item) {
+return '<tr><td>' + marketBadge(item.market) + '</td><td><strong>' + escapeHtml(item.displayName || 'Unnamed') + '</strong></td><td>' + escapeHtml(item.platforms || '—') + '</td><td>' + statusBadge(item.status || 'Blank') + '</td></tr>';
+}).join('');
+openModal('<form id="kol-import-run-form" class="modal-card import-modal"><div class="modal-heading"><div><p class="eyebrow">Import preview</p><h2>' + escapeHtml(preview.sourceName || 'KOL Database') + '</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><input type="hidden" name="sourceUrl" value="' + escapeAttr(preview.sourceUrl || payload.sourceUrl || '') + '"><input type="hidden" name="markets" value="' + escapeAttr(payload.markets || 'VN,TH,TW') + '"><div class="import-kpi-grid"><span><small>Source rows</small><strong>' + formatNumber(totals.sourceRows || 0) + '</strong></span><span><small>Accounts found</small><strong>' + formatNumber(totals.accountsFound || 0) + '</strong></span><span><small>New creators</small><strong>' + formatNumber(totals.creatorsCreated || 0) + '</strong></span><span><small>New accounts</small><strong>' + formatNumber(totals.accountsCreated || 0) + '</strong></span></div><div class="import-market-summary">' + marketRows + '</div><div class="import-dedupe"><span>Existing accounts to skip<strong>' + formatNumber(totals.accountsAlreadyExisting || 0) + '</strong></span><span>Duplicates inside source<strong>' + formatNumber(totals.sourceDuplicates || 0) + '</strong></span><span>Black list rows<strong>' + formatNumber(totals.blacklistedRows || 0) + '</strong></span></div>' + warnings + '<label class="import-update-option"><input type="checkbox" name="updateExisting" value="TRUE" checked><span><strong>Update matched accounts</strong><small>Refresh follower count, fee, app fit and source contact when a duplicate already exists.</small></span></label><div class="import-sample"><p>Sample mapping</p><div class="table-scroll"><table class="data-table"><thead><tr><th>Market</th><th>Creator</th><th>Accounts</th><th>Source status</th></tr></thead><tbody>' + sample + '</tbody></table></div></div><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Import ' + formatNumber(totals.accountsCreated || 0) + ' accounts</button></div></form>');
+}
+function openTemplateModal(market) {
+const template = campaignTemplate(market);
+openModal('<form id="template-form" class="modal-card"><div class="modal-heading"><div><p class="eyebrow">Market template</p><h2>Edit ' + escapeHtml(market) + ' defaults</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><input type="hidden" name="Market" value="' + escapeAttr(market) + '"><div class="modal-note"><span>◎</span><p>These values will be preselected whenever a new ' + escapeHtml(market) + ' campaign is created. Existing campaigns will not be changed.</p></div><fieldset class="platform-fieldset"><legend>Default platforms</legend><div class="platform-options">' + platformChoices(template.platforms) + '</div></fieldset><div class="form-grid"><label>Default target KOLs<input type="number" min="1" name="Target_KOLs" value="' + escapeAttr(template.targetKols || 20) + '" required></label><label>Currency<input value="' + escapeAttr(template.currency || currencyForMarket(market)) + '" disabled></label></div><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Save template</button></div></form>');
+}
+function applyCampaignTemplate(market) {
+const form = document.getElementById('campaign-form');
+if (!form) return;
+const template = campaignTemplate(market);
+form.querySelectorAll('input[name="Platforms"]').forEach(function (input) {
+input.checked = (template.platforms || []).includes(input.value);
+});
+const target = form.querySelector('input[name="Target_KOLs"]');
+const budget = form.querySelector('input[name="Budget"]');
+if (target) target.value = template.targetKols || 20;
+if (budget) budget.placeholder = template.currency || currencyForMarket(market);
+}
+function campaignTemplate(market) {
+const templates = state.config.templates || {};
+return templates[market] || { market: market, currency: currencyForMarket(market), platforms: [], targetKols: 20 };
+}
+function platformChoices(selected) {
+selected = selected || [];
+return (state.config.platforms || ['TikTok','Instagram','Threads','X','YouTube','Facebook','Other']).map(function (platform) {
+return '<label class="platform-choice"><input type="checkbox" name="Platforms" value="' + escapeAttr(platform) + '"' + (selected.includes(platform) ? ' checked' : '') + '><span>' + escapeHtml(platform) + '</span></label>';
+}).join('');
+}
+function categoryChoices(selectedCsv) {
+const selected = String(selectedCsv || '').split(/[,|]/).map(function (item) { return item.trim(); }).filter(Boolean);
+const options = (state.config.categories || []).map(function (category) {
+return '<label class="platform-choice cat-' + categoryTone(category) + '"><input type="checkbox" name="Categories" value="' + escapeAttr(category) + '"' + (selected.indexOf(category) >= 0 ? ' checked' : '') + '><span>' + escapeHtml(category) + '</span></label>';
+}).join('');
+const summary = 'Category' + (selected.length ? ' (' + selected.length + ')' : '');
+return '<details class="dropdown-field"><summary>' + escapeHtml(summary) + '</summary><div class="dropdown-panel platform-options">' + options + '</div></details>';
+}
+// Chọn Marketing team nào được xem/làm việc trên campaign này. Chỉ Admin/Booking
+// mới thấy field này (state.config.marketingTeam rỗng với các role khác).
+function marketingTeamChoices(selectedCsv) {
+const team = state.config.marketingTeam || [];
+if (!team.length) return '<p class="form-help">No Marketing team members in the system yet (add them in Settings → Users).</p>';
+const selected = String(selectedCsv || '').split(',').map(function (item) { return item.trim().toLowerCase(); }).filter(Boolean);
+const options = team.map(function (member) {
+const checked = selected.indexOf(String(member.Email || '').toLowerCase()) >= 0;
+return '<label class="platform-choice"><input type="checkbox" name="Assigned_Marketing" value="' + escapeAttr(member.Email) + '"' + (checked ? ' checked' : '') + '><span>' + escapeHtml(member.Name || member.Email) + '</span></label>';
+}).join('');
+const summary = 'Assigned Marketing' + (selected.length ? ' (' + selected.length + ')' : ' (none assigned)');
+return '<details class="dropdown-field"><summary>' + escapeHtml(summary) + '</summary><div class="dropdown-panel platform-options">' + options + '</div></details>';
+}
+function openShortlistModal() {
+openModal('<form id="shortlist-form" class="modal-card"><div class="modal-heading"><div><p class="eyebrow">Sourcing pool</p><h2>Create shortlist</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div><label>Shortlist name<input name="Shortlist_Name" required placeholder="e.g. August · Vietnam"></label><div class="form-grid"><label>Market<select name="Market"><option>VN</option><option>TH</option><option>TW</option></select></label><label>Month<input type="month" name="Month"></label></div><label>Related campaign<select name="Campaign_ID"><option value="">Not linked yet</option>' + state.campaigns.map(function (c) { return '<option value="' + escapeAttr(c.Campaign_ID) + '">' + escapeHtml(c.App + ' · ' + c.Campaign_Name + ' · ' + c.Market) + '</option>'; }).join('') + '</select></label><label>Notes<textarea name="Notes"></textarea></label><div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Create shortlist</button></div></form>');
+}
+async function refreshDashboard() {
+state.dashboard = await server('getDashboardData');
+state.campaigns = await server('listCampaigns', {});
+updateNotificationBadge();
+}
+function openModal(content) { modalRoot.innerHTML = '<div class="modal-backdrop">' + content + '</div>'; }
+function closeModal() {
+modalRoot.innerHTML = '';
+if (state.sync.pending) {
+setTimeout(applyPendingRealtimeSync_, 80);
+}
+}
+function setFormBusy(form, busy) { const button = form.querySelector('button[type="submit"]'); if (!button) return; if (!button.dataset.original) button.dataset.original = button.textContent; button.disabled = busy; button.textContent = busy ? 'Saving…' : button.dataset.original; }
+function formToObject(form) {
+return Array.from(new FormData(form).entries()).reduce(function (obj, pair) {
+if (Object.prototype.hasOwnProperty.call(obj, pair[0])) obj[pair[0]] += ',' + pair[1];
+else obj[pair[0]] = pair[1];
+return obj;
+}, {});
+}
+function pageHeading(eyebrow, title, copy, actions) { return '<div class="page-heading"><div><p class="eyebrow">' + escapeHtml(eyebrow) + '</p><h1>' + escapeHtml(title) + '</h1><p class="copy">' + escapeHtml(copy) + '</p></div>' + (actions ? '<div class="heading-actions">' + actions + '</div>' : '') + '</div>'; }
+function metric(label, value, delta, tone, icon) { return '<article class="metric-card"><div class="metric-icon metric-' + tone + '">' + icon + '</div><div><p>' + escapeHtml(label) + '</p><strong>' + escapeHtml(String(value)) + '</strong><small>' + escapeHtml(delta) + '</small></div></article>'; }
+function progress(value, tone) { const width = Math.max(0, Math.min(100, Number(value || 0))); return '<span class="progress-track"><i class="progress-fill progress-' + (tone || 'blue') + '" style="width:' + width + '%"></i></span>'; }
+function deadlineRow(item) { const date = safeDate(item.date); const day = date ? String(date.getDate()).padStart(2, '0') : '—'; const month = date ? new Intl.DateTimeFormat('en-US',{month:'short'}).format(date).toUpperCase() : ''; return '<div class="deadline-row"><span class="date-box"><strong>' + day + '</strong><small>' + month + '</small></span><div><strong>' + escapeHtml(item.title || item.type) + '</strong><small>' + escapeHtml(item.subtitle || item.type) + '</small></div>' + statusBadge(item.type) + '</div>'; }
+function campaignCard(c) { const target = Number(c.Target_KOLs || 0); const confirmed = Number(c.Confirmed_Count || 0); const pct = target ? Math.round(confirmed / target * 100) : 0; const spend = Number(c.Budget || 0) ? Math.round(Number(c.Committed_Budget || 0) / Number(c.Budget) * 100) : 0; const meta = [c.Market, c.Platforms, dateRange(c)].filter(Boolean).join(' · '); return '<button class="campaign-card" data-action="view-campaign" data-id="' + escapeAttr(c.Campaign_ID) + '"><div class="campaign-card-top">' + appTile(c.App, c.Market) + statusBadge(c.Status) + '</div><p class="campaign-id">' + escapeHtml(c.Campaign_ID) + '</p><h3>' + escapeHtml(c.App + ' · ' + c.Campaign_Name) + '</h3><p class="campaign-meta"><span>' + escapeHtml(meta) + '</span></p><div class="campaign-progress-label"><span>Confirmed</span><strong>' + confirmed + '/' + (target || '—') + '</strong></div>' + progress(pct, c.Market === 'TH' ? 'violet' : c.Market === 'TW' ? 'amber' : 'blue') + '<div class="campaign-budget"><span>Budget used</span><strong>' + spend + '%</strong></div></button>'; }
+function appTile(app, market) { const name = String(app || '').trim(); const logo = APP_LOGOS[name.toUpperCase()]; if (logo) return '<span class="app-tile app-logo-tile" title="' + escapeAttr(name) + '"><img src="' + logo + '" alt="' + escapeAttr(name) + '"></span>'; return '<span class="app-tile ' + marketTileClass(market) + '">' + escapeHtml((name || 'S').slice(0,1)) + '</span>'; }
+function shortlistCard(item) {const pct = item.KOL_Count ? Math.round(Number(item.Approved_Count || 0) / Number(item.KOL_Count) * 100) : 0; return '<button class="card shortlist-card" style="text-align:left; border:1px solid #e7ebf3;" data-action="view-shortlist-detail" data-id="' + escapeAttr(item.Shortlist_ID) + '"><div class="card-head">' + marketBadge(item.Market) + '</div><h3>' + escapeHtml(item.Shortlist_Name) + '</h3><p>' + formatNumber(item.KOL_Count || 0) + ' creator accounts</p><div class="shortlist-stats"><span><strong>' + formatNumber(item.Approved_Count || 0) + '</strong><small>Approved</small></span><span><strong>' + formatNumber(Math.max(0, Number(item.KOL_Count || 0) - Number(item.Approved_Count || 0))) + '</strong><small>Needs review</small></span></div>' + progress(pct, item.Market === 'TH' ? 'violet' : item.Market === 'TW' ? 'amber' : 'blue') + '</button>';}
+// Lưu ý: accountRow() thật (đang chạy) được định nghĩa lại (override) trong
+// Experience.html — vì Experience.html load SAU file này. Bản định nghĩa cũ ở
+// đây đã bị xoá để tránh nhầm lẫn sửa nhầm chỗ không chạy (đã từng xảy ra).
+function categoryTone(category) {
+const groups = (state.config && state.config.categoryGroups) || {};
+return groups[category] || 'grey';
+}
+function statusTone(value) {
+const lower = String(value || '').toLowerCase();
+if (/not contacted/.test(lower)) return 'neutral';
+if (/deal|active|confirmed|signed|paid|approved|posted|completed|ready/.test(lower)) return 'mint';
+if (/contacted|planning|picked|sent|review|brief|processing|campaign|primary|submitted|new/.test(lower)) return 'blue';
+if (/revision|pending|negotiating|hold|draft|due|edit/.test(lower)) return 'amber';
+if (/decline|declined|cancelled|rejected|black list|can't contact|cannot contact|no response/.test(lower)) return 'danger';
+if (/backup|scheduled|organic/.test(lower)) return 'violet';
+return 'neutral';
+}
+// Chọn trạng thái trực tiếp ngay trong bảng (không cần bấm Edit) — feedback ảnh 5.
+// Nhìn vẫn giống status badge (bo tròn, có màu) nhưng thực chất là 1 <select>
+// thật; đổi giá trị là gọi API cập nhật ngay.
+function inlineStatusSelect(fieldName, value, campaignKolId, options) {
+const text = String(value || options[0] || '');
+return '<select class="status-select status-' + statusTone(text) + '" data-inline-status data-field="' + escapeAttr(fieldName) + '" data-id="' + escapeAttr(campaignKolId) + '">' +
+options.map(function (opt) { return '<option value="' + escapeAttr(opt) + '"' + (opt === text ? ' selected' : '') + '>' + escapeHtml(opt) + '</option>'; }).join('') +
+'</select>';
+}
+function marketBadge(market) { const value = String(market || '—'); return '<span class="market-badge market-' + value.toLowerCase() + '">' + escapeHtml(value) + '</span>'; }
+function avatar(name, market) { return '<span class="avatar avatar-' + String(market || '').toLowerCase() + '">' + escapeHtml(initials(name || 'U')) + '</span>'; }
+function emptyState(icon, title, copy, action) { return '<section class="empty-state"><i>' + icon + '</i><h3>' + escapeHtml(title) + '</h3><p>' + escapeHtml(copy) + '</p>' + (action || '') + '</section>'; }
+function miniEmpty(copy) { return '<div style="display:grid;place-items:center;min-height:190px;color:#929bad;font-size:10px;text-align:center">' + escapeHtml(copy) + '</div>'; }
+function databaseLoading() { return '<section class="card" style="padding:15px"><div class="skeleton"></div></section>'; }
+function marketTileClass(market) { return market === 'TH' ? 'app-th' : market === 'TW' ? 'app-tw' : ''; }
+function dateRange(c) { const start = c.Posting_Start || c.Start_Date || ''; const end = c.Posting_End || c.End_Date || ''; return [start, end].filter(Boolean).join(' → ') || 'Dates not set'; }
+function money(value, currency) { const number = Number(String(value || 0).replace(/[^0-9.-]/g,'')) || 0; return new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(number) + (currency ? ' ' + escapeHtml(String(currency)) : ''); }
+// Bản sao phía client của calculateContractTax_ trong Code.gs — phải khớp từng số.
+// Đặt ở FILE GỐC này (không phải Experience/CampaignWorkspace) vì cả hai file đó
+// load sau và đều cần dùng; nếu định nghĩa ở file sau thì lại thêm một phụ thuộc
+// ngược, đúng thứ CLAUDE.md cảnh báo.
+// Mô hình: gross = net + tax, tax là 10% của GROSS (gross-up), chỉ áp khi số tiền
+// chịu thuế >= 5.000.000. Đổi ở đây thì PHẢI đổi calculateContractTax_ trong
+// Code.gs và test_calculateContractTax_ trong Tests.gs cùng lúc.
+const CONTRACT_VN_PIT_RATE_CLIENT = 0.1;
+const CONTRACT_VN_PIT_THRESHOLD_CLIENT = 5000000;
+function calculateContractTaxClient_(baseAmount) {
+const base = Math.max(0, Number(baseAmount) || 0);
+if (base < CONTRACT_VN_PIT_THRESHOLD_CLIENT) return 0;
+return Math.round(base / (1 - CONTRACT_VN_PIT_RATE_CLIENT)) - Math.round(base);
+}
+function currencyForMarket(market) { return market === 'VN' ? 'VND' : market === 'TH' ? 'THB' : market === 'TW' ? 'TWD' : 'USD'; }
+function initials(value) { return String(value || 'U').split(/[\s@._-]+/).filter(Boolean).slice(0,2).map(function (part) { return part[0]; }).join('').toUpperCase() || 'U'; }
+function safeDate(value) { if (!value) return null; const date = new Date(value); return Number.isNaN(date.getTime()) ? null : date; }
+function escapeHtml(value) { return String(value == null ? '' : value).replace(/[&<>'"]/g,function (char) { return ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[char]; }); }
+function escapeAttr(value) { return escapeHtml(value).replace(/`/g,'&#96;'); }
+function server(functionName) {
+const args = Array.prototype.slice.call(arguments, 1);
+return new Promise(function (resolve, reject) {
+const runner = google.script.run
+.withSuccessHandler(function (result) {
+if (/^(create|update|save|add|remove|delete|restore|bulk|generate|prepare|migrate|install|disable|rotate|set|reassign|import|scan|mark|upsert|fetchDeliverablePerformance)/.test(functionName)) {
+clearTimeout(state.sync.localTimer);
+state.sync.localTimer = setTimeout(pollWorkspaceChanges_, 650);
+}
+resolve(result);
+})
+.withFailureHandler(function (error) { reject(new Error(error && error.message ? error.message : String(error))); });
+runner[functionName](...args);
+});
+}
+function persistUiState_() {
+try {
+sessionStorage.setItem('kolManagerUiState', JSON.stringify({
+view: state.view,
+campaignId: state.campaignDetail && state.campaignDetail.campaign && state.campaignDetail.campaign.Campaign_ID || '',
+campaignTab: state.campaignTab || 'Overview',
+kolSort: state.workspace && state.workspace.kolSort || 'creator-asc',
+contentSort: state.workspace && state.workspace.contentSort || 'schedule-asc',
+}));
+} catch (error) {}
+}
+async function restoreUiState_() {
+let saved = null;
+try { saved = JSON.parse(sessionStorage.getItem('kolManagerUiState') || 'null'); } catch (error) {}
+if (!saved) return;
+const allowedViews = ['dashboard','campaigns','database','shortlists','calendar','performance','contracts','payments','history','settings'];
+if (allowedViews.indexOf(saved.view) >= 0) state.view = saved.view;
+if (saved.campaignId) {
+try {
+state.campaignDetail = await server('getCampaignWorkspace', saved.campaignId);
+state.view = 'campaigns';
+state.campaignTab = saved.campaignTab || 'Overview';
+if (state.workspace) {
+state.workspace.kolSort = saved.kolSort || 'creator-asc';
+state.workspace.contentSort = saved.contentSort || 'schedule-asc';
+}
+} catch (error) {
+state.campaignDetail = null;
+}
+}
+}
+function renderCampaignDetailPreservingPosition_() {
+const top = window.scrollY;
+const scrolls = Array.prototype.slice.call(document.querySelectorAll('.table-scroll')).map(function (node) {
+return { left: node.scrollLeft, top: node.scrollTop };
+});
+renderCampaignDetail();
+requestAnimationFrame(function () {
+window.scrollTo(0, top);
+Array.prototype.slice.call(document.querySelectorAll('.table-scroll')).forEach(function (node, index) {
+if (!scrolls[index]) return;
+node.scrollLeft = scrolls[index].left;
+node.scrollTop = scrolls[index].top;
+});
+});
+persistUiState_();
+}
+function applyCampaignWorkspaceUpdate_(latest) {
+if (!latest || !latest.campaign) return;
+const previous = state.campaignDetail;
+const selectedTab = state.campaignTab;
+const top = window.scrollY;
+const scrolls = Array.prototype.slice.call(document.querySelectorAll('.table-scroll')).map(function (node) {
+return { left: node.scrollLeft, top: node.scrollTop };
+});
+const campaignChanged = previous && JSON.stringify(previous.campaign || {}) !== JSON.stringify(latest.campaign || {});
+state.campaignDetail = latest;
+state.campaignTab = selectedTab;
+const detail = document.getElementById('detail-content');
+if (!detail || campaignChanged) {
+renderCampaignDetailPreservingPosition_();
+return;
+}
+detail.innerHTML = renderCampaignTab(latest);
+// Bulk bar sống ở #bulk-bar-host, ngoài #main, nên nó không tự vẽ lại khi khối này
+// đổi. Đồng bộ ngay sau mỗi lần render tab (F23).
+if (typeof updateCampaignBulkBar_ === 'function') updateCampaignBulkBar_();
+const kolCount = document.querySelector('.detail-tabs [data-tab="KOLs"] span');
+if (kolCount) kolCount.textContent = String((latest.metrics && latest.metrics.totalKols) || 0);
+requestAnimationFrame(function () {
+window.scrollTo(0, top);
+Array.prototype.slice.call(document.querySelectorAll('.table-scroll')).forEach(function (node, index) {
+if (!scrolls[index]) return;
+node.scrollLeft = scrolls[index].left;
+node.scrollTop = scrolls[index].top;
+});
+if (typeof installCampaignWorkspaceStickyHeader_ === 'function') installCampaignWorkspaceStickyHeader_();
+});
+persistUiState_();
+}
+function startRealtimeSync_() {
+if (state.sync.timer) clearInterval(state.sync.timer);
+state.sync.timer = setInterval(pollWorkspaceChanges_, 3000);
+if (!state.sync.visibilityBound) {
+state.sync.visibilityBound = true;
+document.addEventListener('visibilitychange', function () {
+if (!document.hidden) pollWorkspaceChanges_();
+});
+}
+}
+async function pollWorkspaceChanges_() {
+if (document.hidden || state.sync.refreshing) return;
+state.sync.refreshing = true;
+try {
+if (state.view === 'campaigns' && state.campaignDetail && state.campaignDetail.campaign) {
+const campaignId = state.campaignDetail.campaign.Campaign_ID;
+const result = await server('getCampaignWorkspaceSync', {
+campaignId: campaignId,
+revision: state.sync.revision || '0',
+});
+state.sync.revision = result.revision || state.sync.revision;
+if (!result.changed || !result.workspace) return;
+if (modalRoot.children.length || isUserEditing_()) {
+state.sync.pending = true;
+state.sync.pendingWorkspace = result.workspace;
+return;
+}
+applyCampaignWorkspaceUpdate_(result.workspace);
+return;
+}
+const result = await server('getWorkspaceSyncState');
+if (!state.sync.revision) {
+state.sync.revision = result.revision;
+return;
+}
+if (result.revision === state.sync.revision) return;
+state.sync.revision = result.revision;
+if (modalRoot.children.length || isUserEditing_()) {
+state.sync.pending = true;
+return;
+}
+state.sync.refreshing = false;
+await refreshVisibleDataPreservingState_();
+} catch (error) {
+// Realtime sync is best-effort; the next interval retries automatically.
+} finally {
+state.sync.refreshing = false;
+}
+}
+function isUserEditing_() {
+const active = document.activeElement;
+return active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) && main.contains(active);
+}
+function applyPendingRealtimeSync_() {
+if (!state.sync.pending || modalRoot.children.length || isUserEditing_()) return;
+state.sync.pending = false;
+if (state.sync.pendingWorkspace) {
+const latest = state.sync.pendingWorkspace;
+state.sync.pendingWorkspace = null;
+applyCampaignWorkspaceUpdate_(latest);
+return;
+}
+refreshVisibleDataPreservingState_();
+}
+async function refreshVisibleDataPreservingState_() {
+if (state.sync.refreshing) return;
+state.sync.refreshing = true;
+const top = window.scrollY;
+try {
+if (state.view === 'campaigns' && state.campaignDetail) {
+const campaignId = state.campaignDetail.campaign.Campaign_ID;
+const selectedTab = state.campaignTab;
+const latest = await server('getCampaignWorkspace', campaignId);
+if (state.view === 'campaigns' && state.campaignDetail && state.campaignDetail.campaign.Campaign_ID === campaignId) {
+state.campaignTab = selectedTab;
+applyCampaignWorkspaceUpdate_(latest);
+}
+} else if (state.view === 'database') {
+state.db.cache.clear();
+await loadAccounts(true);
+window.scrollTo(0, top);
+} else if (state.view === 'dashboard' || state.view === 'campaigns') {
+const results = await Promise.all([server('getDashboardData'), server('listCampaigns', {})]);
+state.dashboard = results[0];
+state.campaigns = results[1] || [];
+render();
+window.scrollTo(0, top);
+} else if (state.view === 'performance') {
+state.operations.performance = null;
+// The Automation counters used to freeze for the whole session.
+if (state.perfAuto) state.perfAuto.status = null;
+await renderPerformance();
+window.scrollTo(0, top);
+} else if (state.view === 'contracts' || state.view === 'payments') {
+// These views only fetch when their cache is falsy, and the poller had no branch
+// for them at all — so a change made elsewhere never showed up here.
+state.operations.contractData = null;
+state.operations.contracts = null;
+state.operations.payments = null;
+if (state.contractHub) state.contractHub.data = null;
+await renderOperations(state.view);
+window.scrollTo(0, top);
+} else if (state.view === 'history') {
+state.operations.history = null;
+await renderHistory();
+window.scrollTo(0, top);
+}
+state.notifications = await server('getNotifications', { limit: 12 });
+updateNotificationBadge();
+} finally {
+state.sync.refreshing = false;
+}
+}
+function showToast(message, isError) {
+const toast = document.getElementById('toast');
+toast.textContent = message;
+toast.classList.toggle('error', Boolean(isError));
+toast.classList.remove('is-hidden');
+clearTimeout(showToast.timer);
+showToast.timer = setTimeout(function () { toast.classList.add('is-hidden'); }, 4000);
+}
+function showPageError(error) {
+main.innerHTML = emptyState('!', 'Something went wrong', error.message || String(error), '<button class="ghost-button" data-action="dashboard">Back to dashboard</button>');
+}
+function renderFatal(error) {
+const boot = document.getElementById('boot');
+boot.innerHTML = '<div class="boot-logo" style="background:#dc5966">!</div><div class="boot-copy"><strong>Cannot open KOL Campaign Manager</strong><span style="max-width:520px;text-align:center;line-height:1.6">' + escapeHtml(error.message || String(error)) + '</span></div><button class="ghost-button" style="margin-top:18px" onclick="location.reload()">Try again</button>';
+}
+function addKolPlatformFields(platform, urlName, placeholder) {
+return '<section class="add-kol-platform-row">' +
+'<div class="add-kol-platform-head">' + platformBadge(platform) + '<small>Platform-specific data</small></div>' +
+'<label class="add-kol-platform-url">Profile URL<input type="url" name="' + escapeAttr(urlName) + '" placeholder="' + escapeAttr(placeholder) + '"></label>' +
+'<div class="add-kol-platform-metrics">' +
+'<label>Followers<input type="number" min="0" step="1" name="' + escapeAttr(platform + '_Followers') + '" value="0" inputmode="numeric"></label>' +
+'<label>Starting Fee<input type="number" min="0" step="any" name="' + escapeAttr(platform + '_Starting_Fee') + '" value="0" inputmode="decimal"></label>' +
+'</div></section>';
+}
+function fullProfileNewPlatformSection(platform) {
+const options = (state.config.platforms || []).map(function (item) {
+return '<option value="' + escapeAttr(item) + '"' + (item === platform ? ' selected' : '') + '>' + escapeHtml(item) + '</option>';
+}).join('');
+return '<section class="full-profile-platform full-profile-platform-new" data-new-full-profile-platform>' +
+'<div class="full-profile-platform-head"><div><span class="new-platform-label">New platform</span>' +
+'<select data-new-full-profile-field="Platform" required aria-label="Platform">' + options + '</select></div>' +
+'<button type="button" class="remove-platform-button" data-action="remove-full-profile-platform" aria-label="Remove new platform">Remove</button></div>' +
+'<label>Profile URL *<input type="url" data-new-full-profile-field="Profile_URL" required placeholder="https://"></label>' +
+'<div class="form-grid"><label>Followers<input type="number" min="0" step="1" data-new-full-profile-field="Followers" value="0"></label>' +
+'<label>Starting fee<input type="number" min="0" step="any" data-new-full-profile-field="Starting_Fee" value="0"></label></div>' +
+'</section>';
+}
+function openAddKolDirectModal() {
+openModal(
+'<form id="add-kol-direct-form" class="modal-card add-kol-modal">' +
+'<div class="modal-heading"><div><p class="eyebrow">Database</p><h2>Add New KOL</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+'<div class="form-grid"><label>Display Name *<input name="Display_Name" required placeholder="e.g. Jannine Weigel"></label>' +
+'<label>Market *<select name="Market"><option>VN</option><option>TH</option><option>TW</option><option>Global</option></select></label></div>' +
+'<fieldset class="platform-fieldset add-kol-platform-fieldset"><legend>Platforms · enter at least 1 profile URL</legend>' +
+'<p>Followers and starting fee are saved separately for each platform.</p>' +
+'<div class="add-kol-platform-list">' +
+addKolPlatformFields('Threads', 'Threads_URL', 'https://www.threads.net/@...') +
+addKolPlatformFields('Instagram', 'Instagram_URL', 'https://instagram.com/...') +
+addKolPlatformFields('TikTok', 'TikTok_URL', 'https://tiktok.com/@...') +
+addKolPlatformFields('X', 'X_URL', 'https://x.com/...') +
+addKolPlatformFields('YouTube', 'YouTube_URL', 'https://youtube.com/@...') +
+addKolPlatformFields('Facebook', 'Facebook_URL', 'https://facebook.com/...') +
+'</div>' +
+'</fieldset>' +
+'<div class="modal-note"><span>✓</span><p>Each platform with a profile URL creates one account. All accounts remain grouped under the same creator.</p></div>' +
+'<label>Status<select name="Source_Status"><option>Not contacted</option><option>Pending</option><option>Contacted</option><option>Deal</option><option>No Response</option><option>Can\'t contact</option><option>Decline</option><option>Black List</option></select></label>' +
+categoryChoices('') +
+'<div class="form-grid"><label>Email<input type="email" name="Email"></label>' +
+'<label>Phone<input name="Phone"></label></div>' +
+'<label>App Fit<input name="App_Fit" placeholder="e.g. SNOW, Foodie"></label>' +
+'<div class="modal-actions"><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Save KOL</button></div>' +
+'</form>'
+);
+}
+function openEditKolModal(accountId) {
+const rowData = state.db.rows.find(function(r) { return r.Account_ID === accountId; });
+if (!rowData) return;
+const platformRows = typeof platformEntriesForRow === 'function' ? platformEntriesForRow(rowData) : [rowData];
+const platformSections = platformRows.map(function (platform) {
+const profileUrl = safeWorkspaceUrl(platform.Profile_URL);
+return '<section class="full-profile-platform" data-full-profile-platform data-platform-account="' + escapeAttr(platform.Account_ID || '') + '" data-platform-name="' + escapeAttr(platform.Platform || 'Other') + '">' +
+'<div class="full-profile-platform-head"><div>' + platformBadge(platform.Platform || 'Other') + '<span>@' + escapeHtml(platform.Username || '—') + '</span></div>' +
+(profileUrl ? '<a href="' + escapeAttr(profileUrl) + '" target="_blank" rel="noopener">Open profile ↗</a>' : '') + '</div>' +
+'<label>Profile URL<input type="url" data-full-profile-field="Profile_URL" value="' + escapeAttr(platform.Profile_URL || '') + '" placeholder="https://"></label>' +
+'<div class="form-grid"><label>Followers<input type="number" min="0" step="1" data-full-profile-field="Followers" value="' + Number(platform.Followers || 0) + '"></label>' +
+'<label>Starting fee<input type="number" min="0" step="any" data-full-profile-field="Starting_Fee" value="' + Number(platform.Starting_Fee || 0) + '"></label></div>' +
+'</section>';
+}).join('');
+openModal(
+'<form id="edit-kol-form" class="modal-card full-profile-modal">' +
+'<div class="modal-heading"><div><p class="eyebrow">Update Profile</p><h2>Edit: @' + escapeHtml(rowData.Username) + '</h2></div><button type="button" class="modal-close" data-close-modal aria-label="Close" title="Close">×</button></div>' +
+'<input type="hidden" name="Account_ID" value="' + escapeAttr(rowData.Account_ID) + '">' +
+'<input type="hidden" name="Creator_ID" value="' + escapeAttr(rowData.Creator_ID) + '">' +
+'<label>Display Name<input name="Display_Name" value="' + escapeAttr(rowData.Display_Name || '') + '"></label>' +
+'<div class="form-grid"><label>Email<input type="email" name="Email" value="' + escapeAttr(rowData.Creator_Email || '') + '"></label>' +
+'<label>Phone<input name="Phone" value="' + escapeAttr(rowData.Creator_Phone || '') + '"></label></div>' +
+'<fieldset class="platform-fieldset full-profile-platforms"><legend>Platform profiles</legend><p>Followers, profile URL and starting fee are saved separately for each platform.</p>' +
+'<div class="full-profile-platform-toolbar"><span>' + platformRows.length + ' active platform' + (platformRows.length === 1 ? '' : 's') + '</span><button type="button" class="add-platform-button" data-action="add-full-profile-platform">+ Add platform</button></div>' +
+'<div class="full-profile-platform-list">' + platformSections + '</div></fieldset>' +
+categoryChoices(rowData.Categories || '') +
+'<div class="form-grid"><label>Status<select name="Source_Status" id="edit-source-status"><option>Not contacted</option><option>Pending</option><option>Contacted</option><option>Deal</option><option>No Response</option><option>Can\'t contact</option><option>Decline</option><option>Black List</option></select></label></div>' +
+'<label>App Fit<input name="App_Fit" value="' + escapeAttr(rowData.App_Fit || '') + '"></label>' +
+'<fieldset class="platform-fieldset"><legend>Legal &amp; banking information <small class="optional-tag">needed to generate contracts</small></legend>' +
+'<div class="form-grid"><label>Contract title<select name="Title"><option value="">Select</option><option value="Ông"' + (rowData.Title === 'Ông' ? ' selected' : '') + '>Ông</option><option value="Bà"' + (rowData.Title === 'Bà' ? ' selected' : '') + '>Bà</option></select></label><label>Full legal name<input name="Legal_Name" value="' + escapeAttr(rowData.Legal_Name || '') + '"></label></div>' +
+'<div class="form-grid"><label>ID number<input name="ID_No" value="' + escapeAttr(rowData.ID_No || '') + '"></label>' +
+'<label>Date of issue<input name="Date_Of_Issue" value="' + escapeAttr(rowData.Date_Of_Issue || '') + '" placeholder="DD/MM/YYYY"></label></div>' +
+'<label>Permanent address<input name="Permanent_Address" value="' + escapeAttr(rowData.Permanent_Address || '') + '"></label>' +
+'<div class="form-grid"><label>Bank account number<input name="Bank_Account" value="' + escapeAttr(rowData.Bank_Account || '') + '"></label>' +
+'<label>Bank name<input name="Bank_Name" value="' + escapeAttr(rowData.Bank_Name || '') + '"></label></div>' +
+'</fieldset>' +
+'<div class="profile-delete-note">Deleting removes this KOL from the active database while preserving existing Campaign, Contract and Payment history.</div>' +
+'<div class="modal-actions full-profile-actions"><button type="button" class="danger-button" data-action="delete-kol-profile" data-creator="' + escapeAttr(rowData.Creator_ID || '') + '" data-account="' + escapeAttr(rowData.Account_ID || '') + '" data-name="' + escapeAttr(rowData.Display_Name || rowData.Username || 'this KOL') + '">Delete profile</button><span></span><button type="button" class="ghost-button" data-close-modal>Cancel</button><button type="submit" class="primary-button">Update Changes</button></div>' +
+'</form>'
+);
+const selectStatus = document.getElementById('edit-source-status');
+if(selectStatus) selectStatus.value = rowData.Source_Status || 'Not contacted';
+}
+async function openShortlistDetail(id) {
+state.view = 'shortlists';
+main.innerHTML = '<div class="skeleton"></div>';
+try {
+const data = await server('getShortlistDetail', id);
+state.shortlistDetailData = data;
+renderShortlistDetailView();
+} catch(error) { showPageError(error); }
+}
+</script>

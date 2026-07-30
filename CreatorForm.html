@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<!-- ============================================================================
+  KOL Campaign Manager v1.11.0 — CreatorForm.html
+  ----------------------------------------------------------------------------
+  PASTE AS: new Apps Script HTML file named  CreatorForm.html
+
+  The page a creator opens from their tokenised link to submit legal name, ID,
+  address and bank details. Served by the patched doGet(e) when the request has
+  ?form=creator&token=… (see 11_PATCHES.md).
+
+  Deliberately self-contained: no shared Styles.html, no app shell, no sidebar.
+  A creator must never see anything of the internal workspace.
+============================================================================ -->
+<html lang="en">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Creator information · SNOW</title>
+<style>
+  :root {
+    --ink: #172033; --muted: #758097; --line: #e7ebf3; --line-strong: #d9dfeb;
+    --blue: #2764e7; --mint: #22ad87; --danger: #dc5966; --bg: #f6f8fc;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
+  body { font: 15px/1.5 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 24px 16px 60px; }
+  .wrap { max-width: 620px; margin: 0 auto; }
+  .brand { display: flex; align-items: center; gap: 11px; margin-bottom: 22px; }
+  .mark { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 12px; background: linear-gradient(145deg,#62a8ff,#2d68ea 58%,#6d55d8); color: #fff; font-size: 19px; font-weight: 900; }
+  .brand strong { display: block; font-size: 15px; }
+  .brand small { color: var(--muted); font-size: 12px; }
+  /* .card had NO padding, so any card without a padded variant class sat flush
+   against its border: Automation, all 4 Contract hub cards, both Calendar boards.
+   Variants declared BELOW that set their own padding still win. */
+.card { padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: #fff; padding: 26px; box-shadow: 0 12px 35px rgba(27,45,86,.07); }
+/* MUST stay after .card: same specificity, so the later rule wins. Tables reach
+   the card edge — their cells carry the inset and the sticky first columns are
+   positioned against it. */
+.table-card { padding: 0; }
+  h1 { margin: 0 0 8px; font-size: 21px; }
+  .lede { margin: 0 0 22px; color: var(--muted); font-size: 13px; }
+  label { display: block; margin-bottom: 16px; font-size: 12px; font-weight: 700; color: #566177; }
+  label span.req { color: var(--danger); }
+  input, select { width: 100%; min-height: 44px; margin-top: 6px; border: 1px solid var(--line-strong); border-radius: 10px; background: #fff; padding: 0 13px; font: inherit; font-size: 15px; color: var(--ink); }
+  textarea { width: 100%; margin-top: 6px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 11px 13px; font: inherit; font-size: 15px; resize: vertical; }
+  input:focus, select:focus, textarea:focus { border-color: var(--blue); outline: 2px solid rgba(39,100,231,.12); }
+  .hint { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.5; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
+  .privacy { display: flex; gap: 10px; margin: 4px 0 22px; border-radius: 11px; background: #f0f5ff; padding: 13px 15px; color: #4d6698; font-size: 12px; line-height: 1.55; }
+  button.submit { width: 100%; min-height: 50px; border: 0; border-radius: 11px; background: var(--blue); color: #fff; font: inherit; font-size: 15px; font-weight: 800; cursor: pointer; }
+  button.submit:disabled { opacity: .6; cursor: default; }
+  .msg { margin-bottom: 18px; border-radius: 10px; padding: 13px 15px; font-size: 13px; line-height: 1.55; }
+  .msg.error { background: #ffe9eb; color: #a2454f; }
+  .msg.ok { background: #e5f7f1; color: #12775a; }
+  .done { text-align: center; padding: 18px 0 6px; }
+  .done .tick { display: grid; width: 62px; height: 62px; margin: 0 auto 18px; place-items: center; border-radius: 50%; background: #e5f7f1; color: var(--mint); font-size: 30px; }
+  .foot { margin-top: 18px; text-align: center; color: var(--muted); font-size: 11px; }
+  .is-hidden { display: none !important; }
+  .skeleton { height: 260px; border-radius: 12px; background: linear-gradient(100deg,#eef1f6 30%,#f7f9fc 50%,#eef1f6 70%); background-size: 220% 100%; animation: shimmer 1.3s infinite linear; }
+  @keyframes shimmer { to { background-position: -220% 0; } }
+  label.has-error > input, label.has-error > select, label.has-error > textarea { border-color: var(--danger); background: #fffafa; }
+  .field-error { display: block; margin-top: 5px; color: var(--danger); font-size: 11px; font-weight: 700; line-height: 1.45; }
+  .readback { display: block; margin-top: 6px; color: #12775a; font-size: 13px; font-weight: 800; letter-spacing: .08em; }
+  .readback.is-empty { color: var(--muted); font-weight: 600; letter-spacing: 0; }
+  .lang { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 12px; }
+  .lang button { min-height: 34px; border: 1px solid var(--line-strong); border-radius: 9px; background: #fff; padding: 0 11px; font: inherit; font-size: 12px; font-weight: 700; color: var(--muted); cursor: pointer; }
+  .lang button[aria-pressed="true"] { border-color: var(--blue); background: #eef4ff; color: var(--blue); }
+  .lang button:focus-visible, button.submit:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <span class="mark">S</span>
+    <span><strong>SNOW</strong><small id="brand-sub">Creator information</small></span>
+  </div>
+  <div class="card" id="root"><div class="skeleton"></div></div>
+  <p class="foot" id="foot">Sent to you by the SNOW creator operations team.</p>
+</div>
+
+<script>
+'use strict';
+
+var TOKEN = <?= JSON.stringify(formToken) ?>;
+
+function esc(value) {
+  return String(value == null ? '' : value).replace(/[&<>'"]/g, function (char) {
+    return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char];
+  });
+}
+
+function call(name, arg) {
+  return new Promise(function (resolve, reject) {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(function (error) {
+        reject(new Error(error && error.message ? error.message : String(error)));
+      })[name](arg);
+  });
+}
+
+/* ----------------------------------------------------------------------------
+ * Copy. Vietnamese is the default: nearly every creator is Vietnamese, and this
+ * page asks for a national ID and a bank account — the two things people
+ * mistype most when reading a language they only half-follow. English stays
+ * one tap away for TH/TW creators, who have no localised copy of their own yet.
+ * -------------------------------------------------------------------------- */
+
+var COPY = {
+  vi: {
+    htmlLang: 'vi',
+    brandSub: 'Thông tin nhà sáng tạo',
+    foot: 'Đường liên kết này do đội Creator Operations của SNOW gửi cho bạn.',
+    heading: 'Thông tin hợp đồng của bạn',
+    lede: 'chúng tôi cần một vài thông tin pháp lý để lập hợp đồng hợp tác và thanh toán cho bạn. Việc này mất khoảng hai phút và chỉ cần làm một lần.',
+    hello: 'Xin chào',
+    privacy: 'Thông tin này chỉ dùng để lập hợp đồng và chuyển tiền cho bạn. Dữ liệu được lưu trong hệ thống nội bộ của SNOW và không chia sẻ với bất kỳ ai khác.',
+    title: 'Danh xưng',
+    selectPlaceholder: 'Chọn…',
+    legalName: 'Họ và tên đầy đủ',
+    legalNameHint: 'Ghi đúng như trên CCCD/CMND hoặc hộ chiếu của bạn.',
+    idNo: 'Số CCCD / CMND / hộ chiếu',
+    idNoHint: 'Nhập được cả chữ và số, ví dụ hộ chiếu C1234567.',
+    dateOfIssue: 'Ngày cấp',
+    dateOfIssueHint: 'Ngày cấp ghi trên giấy tờ.',
+    address: 'Địa chỉ thường trú',
+    addressHint: 'Địa chỉ đăng ký trên giấy tờ, không nhất thiết là nơi bạn đang ở.',
+    bankAccount: 'Số tài khoản ngân hàng',
+    bankAccountHint: 'Chỉ gồm chữ số. Sai một số là tiền chuyển sai người.',
+    bankConfirm: 'Nhập lại số tài khoản',
+    bankConfirmHint: 'Nhập lại để chắc chắn không có lỗi đánh máy.',
+    bankName: 'Tên ngân hàng',
+    bankNameHint: 'Chủ tài khoản phải là người có tên ở trên.',
+    email: 'Email',
+    phone: 'Số điện thoại',
+    readback: 'Số sẽ được lưu:',
+    readbackEmpty: 'Chưa nhập số tài khoản.',
+    submit: 'Gửi thông tin',
+    submitting: 'Đang gửi…',
+    errSummary: 'Vui lòng kiểm tra lại các mục được đánh dấu bên dưới.',
+    errRequired: 'Vui lòng nhập thông tin này.',
+    errId: 'Số giấy tờ cần từ 6 đến 20 chữ hoặc số.',
+    errBank: 'Số tài khoản cần từ 6 đến 20 chữ số.',
+    errConfirmRequired: 'Vui lòng nhập lại số tài khoản để xác nhận.',
+    errBankMismatch: 'Hai lần nhập không giống nhau.',
+    errEmail: 'Địa chỉ email không hợp lệ.',
+    errPhone: 'Số điện thoại quá ngắn.',
+    doneHeading: 'Cảm ơn bạn',
+    doneBody: 'Chúng tôi đã nhận được thông tin. Đội SNOW sẽ lập hợp đồng và gửi cho bạn ký. Bạn có thể đóng trang này.',
+    deadHeading: 'Không mở được liên kết này',
+    deadBody: 'Vui lòng trả lời tin nhắn của người đã gửi liên kết cho bạn và xin một liên kết mới.',
+  },
+  en: {
+    htmlLang: 'en',
+    brandSub: 'Creator information',
+    foot: 'Sent to you by the SNOW creator operations team.',
+    heading: 'Your contract details',
+    lede: 'we need a few legal details to prepare your collaboration contract and payment. This takes about two minutes and only needs to be done once.',
+    hello: 'Hello',
+    privacy: 'These details are used only to issue your contract and pay you. They are stored in SNOW’s internal system and are not shared with anyone else.',
+    title: 'Title',
+    selectPlaceholder: 'Select…',
+    legalName: 'Full legal name',
+    legalNameHint: 'Exactly as printed on your ID card or passport.',
+    idNo: 'ID card or passport number',
+    idNoHint: 'Letters are allowed, for example passport C1234567.',
+    dateOfIssue: 'Date of issue',
+    dateOfIssueHint: 'The issue date shown on the ID.',
+    address: 'Permanent address',
+    addressHint: 'The registered address on your ID, not necessarily where you live now.',
+    bankAccount: 'Bank account number',
+    bankAccountHint: 'Digits only. One wrong digit sends the money to the wrong person.',
+    bankConfirm: 'Re-enter account number',
+    bankConfirmHint: 'Typed twice so a typo cannot slip through.',
+    bankName: 'Bank name',
+    bankNameHint: 'The account holder must be the person named above.',
+    email: 'Email',
+    phone: 'Phone',
+    readback: 'Will be saved as:',
+    readbackEmpty: 'No account number entered yet.',
+    submit: 'Submit my details',
+    submitting: 'Submitting…',
+    errSummary: 'Please check the highlighted fields below.',
+    errRequired: 'This field is required.',
+    errId: 'The ID number must be 6 to 20 letters or digits.',
+    errBank: 'The account number must be 6 to 20 digits.',
+    errConfirmRequired: 'Please re-enter the account number to confirm it.',
+    errBankMismatch: 'The two entries do not match.',
+    errEmail: 'That email address is not valid.',
+    errPhone: 'That phone number looks too short.',
+    doneHeading: 'Thank you',
+    doneBody: 'Your information has been received. The SNOW team will prepare your contract and send it for signature. You can close this page.',
+    deadHeading: 'This link cannot be opened',
+    deadBody: 'Please reply to the person who sent you this link and ask for a new one.',
+  },
+};
+
+var LANG = 'vi';
+var CONTEXT = {};
+
+function t() { return COPY[LANG] || COPY.vi; }
+
+function applyChrome() {
+  var c = t();
+  document.documentElement.lang = c.htmlLang;
+  var sub = document.getElementById('brand-sub');
+  var foot = document.getElementById('foot');
+  if (sub) sub.textContent = c.brandSub;
+  if (foot) foot.textContent = c.foot;
+}
+
+function digitsOnly(value) { return String(value == null ? '' : value).replace(/\D/g, ''); }
+function idNormalized(value) { return String(value == null ? '' : value).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function groupDigits(value) { return digitsOnly(value).replace(/(\d{4})(?=\d)/g, '$1 '); }
+function trimmed(value) { return String(value == null ? '' : value).trim(); }
+
+function showError(message) {
+  applyChrome();
+  var c = t();
+  document.getElementById('root').innerHTML =
+    '<h1>' + esc(c.deadHeading) + '</h1>' +
+    '<div class="msg error">' + esc(message) + '</div>' +
+    '<p class="lede">' + esc(c.deadBody) + '</p>';
+}
+
+function showDone() {
+  applyChrome();
+  var c = t();
+  document.getElementById('root').innerHTML =
+    '<div class="done"><div class="tick">✓</div>' +
+    '<h1>' + esc(c.doneHeading) + '</h1>' +
+    '<p class="lede">' + esc(c.doneBody) + '</p></div>';
+}
+
+function dateValue(value) {
+  var text = String(value || '');
+  return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : '';
+}
+
+/**
+ * The same rules run again on the server — this page is public, so nothing here
+ * can be trusted. Both bounds are deliberately loose: a false rejection stops a
+ * real creator from getting paid, which is worse than accepting an odd-looking
+ * number that a human will read anyway. They still catch a fat-fingered entry.
+ */
+function validate(values) {
+  var c = t();
+  var errors = {};
+  if (!trimmed(values.Legal_Name)) errors.Legal_Name = c.errRequired;
+
+  var idRaw = trimmed(values.ID_No);
+  var id = idNormalized(values.ID_No);
+  if (!idRaw) errors.ID_No = c.errRequired;
+  else if (!/^[A-Z0-9]{6,20}$/.test(id)) errors.ID_No = c.errId;
+
+  if (!trimmed(values.Permanent_Address)) errors.Permanent_Address = c.errRequired;
+
+  var bankRaw = trimmed(values.Bank_Account);
+  var bank = digitsOnly(values.Bank_Account);
+  if (!bankRaw) errors.Bank_Account = c.errRequired;
+  else if (!/^\d{6,20}$/.test(bank)) errors.Bank_Account = c.errBank;
+  // Re-entry is only demanded when the number is new or has actually changed, so
+  // a creator fixing just their address never has to retype it.
+  else if (bank !== digitsOnly(CONTEXT.Bank_Account)) {
+    var confirmRaw = trimmed(values.Bank_Account_Confirm);
+    if (!confirmRaw) errors.Bank_Account_Confirm = c.errConfirmRequired;
+    else if (digitsOnly(confirmRaw) !== bank) errors.Bank_Account_Confirm = c.errBankMismatch;
+  }
+
+  if (!trimmed(values.Bank_Name)) errors.Bank_Name = c.errRequired;
+  if (trimmed(values.Email) && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(trimmed(values.Email))) {
+    errors.Email = c.errEmail;
+  }
+  if (trimmed(values.Phone) && digitsOnly(values.Phone).length < 8) errors.Phone = c.errPhone;
+  return errors;
+}
+
+function field(name, label, control, hint, required, errors, extra) {
+  var message = errors[name];
+  return '<label class="' + (message ? 'has-error' : '') + '">' + esc(label) +
+    (required ? ' <span class="req">*</span>' : '') + control +
+    (hint ? '<span class="hint">' + esc(hint) + '</span>' : '') +
+    (extra || '') +
+    (message ? '<span class="field-error" role="alert">' + esc(message) + '</span>' : '') +
+    '</label>';
+}
+
+function readValues() {
+  var form = document.getElementById('form');
+  var values = {};
+  if (!form) return values;
+  Array.prototype.forEach.call(form.elements, function (element) {
+    if (element.name) values[element.name] = element.value;
+  });
+  return values;
+}
+
+function renderForm(values, errors) {
+  values = values || {};
+  errors = errors || {};
+  applyChrome();
+  var c = t();
+  var greeting = CONTEXT.Display_Name
+    ? c.hello + ' ' + esc(CONTEXT.Display_Name) + ','
+    : c.hello + ',';
+  var bank = digitsOnly(values.Bank_Account);
+  var needsConfirm = !digitsOnly(CONTEXT.Bank_Account) ||
+    bank !== digitsOnly(CONTEXT.Bank_Account) ||
+    Object.prototype.hasOwnProperty.call(errors, 'Bank_Account_Confirm');
+
+  document.getElementById('root').innerHTML =
+    '<div class="lang">' +
+      '<button type="button" data-lang="vi" aria-pressed="' + (LANG === 'vi') + '">Tiếng Việt</button>' +
+      '<button type="button" data-lang="en" aria-pressed="' + (LANG === 'en') + '">English</button>' +
+    '</div>' +
+    '<h1>' + esc(c.heading) + '</h1>' +
+    '<p class="lede">' + greeting + ' ' + esc(c.lede) + '</p>' +
+    '<div class="privacy"><span>🔒</span><div>' + esc(c.privacy) + '</div></div>' +
+    '<div class="msg error' + (Object.keys(errors).length ? '' : ' is-hidden') + '" id="err" role="alert">' +
+      esc(Object.keys(errors).length ? c.errSummary : '') + '</div>' +
+    '<form id="form" novalidate>' +
+      '<div class="row">' +
+        field('Title', c.title,
+          '<select name="Title">' + ['', 'Mr.', 'Ms.', 'Mrs.'].map(function (option) {
+            return '<option value="' + esc(option) + '"' +
+              (option === values.Title ? ' selected' : '') + '>' +
+              esc(option || c.selectPlaceholder) + '</option>';
+          }).join('') + '</select>', '', false, errors) +
+        field('Legal_Name', c.legalName,
+          '<input name="Legal_Name" value="' + esc(values.Legal_Name) + '" autocomplete="name">',
+          c.legalNameHint, true, errors) +
+      '</div>' +
+      '<div class="row">' +
+        field('ID_No', c.idNo,
+          '<input name="ID_No" value="' + esc(values.ID_No) + '" autocomplete="off" ' +
+            'autocapitalize="characters" spellcheck="false">',
+          c.idNoHint, true, errors) +
+        field('Date_Of_Issue', c.dateOfIssue,
+          '<input name="Date_Of_Issue" type="date" value="' + esc(dateValue(values.Date_Of_Issue)) + '">',
+          c.dateOfIssueHint, false, errors) +
+      '</div>' +
+      field('Permanent_Address', c.address,
+        '<textarea name="Permanent_Address" rows="2">' + esc(values.Permanent_Address) + '</textarea>',
+        c.addressHint, true, errors) +
+      '<div class="row">' +
+        field('Bank_Account', c.bankAccount,
+          '<input name="Bank_Account" value="' + esc(values.Bank_Account) + '" autocomplete="off" ' +
+            'inputmode="numeric" spellcheck="false">',
+          c.bankAccountHint, true, errors,
+          '<span class="readback' + (bank ? '' : ' is-empty') + '" id="readback">' +
+            esc(bank ? c.readback + ' ' + groupDigits(bank) : c.readbackEmpty) + '</span>') +
+        field('Bank_Name', c.bankName,
+          '<input name="Bank_Name" value="' + esc(values.Bank_Name) + '">',
+          c.bankNameHint, true, errors) +
+      '</div>' +
+      (needsConfirm
+        ? field('Bank_Account_Confirm', c.bankConfirm,
+            '<input name="Bank_Account_Confirm" value="' + esc(values.Bank_Account_Confirm) + '" ' +
+              'autocomplete="off" inputmode="numeric" spellcheck="false">',
+            c.bankConfirmHint, true, errors)
+        : '') +
+      '<div class="row">' +
+        field('Email', c.email,
+          '<input name="Email" type="email" value="' + esc(values.Email) + '" autocomplete="email">',
+          '', false, errors) +
+        field('Phone', c.phone,
+          '<input name="Phone" type="tel" inputmode="tel" value="' + esc(values.Phone) + '" autocomplete="tel">',
+          '', false, errors) +
+      '</div>' +
+      '<button type="submit" class="submit" id="go">' + esc(c.submit) + '</button>' +
+    '</form>';
+
+  document.getElementById('form').addEventListener('submit', onSubmit);
+
+  // Live read-back: the creator sees the digits actually captured, grouped, as
+  // they type — the cheapest way to catch a transposed pair.
+  var account = document.querySelector('[name="Bank_Account"]');
+  account.addEventListener('input', function () {
+    var node = document.getElementById('readback');
+    var value = digitsOnly(account.value);
+    node.textContent = value ? t().readback + ' ' + groupDigits(value) : t().readbackEmpty;
+    node.className = 'readback' + (value ? '' : ' is-empty');
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.lang button'), function (button) {
+    button.addEventListener('click', function () {
+      var next = button.dataset.lang;
+      if (next === LANG) return;
+      var current = readValues();
+      LANG = next;
+      renderForm(current, {});
+    });
+  });
+}
+
+function onSubmit(event) {
+  event.preventDefault();
+  var values = readValues();
+  var errors = validate(values);
+  if (Object.keys(errors).length) {
+    renderForm(values, errors);
+    var first = document.querySelector('.has-error input, .has-error textarea, .has-error select');
+    if (first) { first.focus(); first.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    return;
+  }
+
+  var button = document.getElementById('go');
+  button.disabled = true;
+  button.textContent = t().submitting;
+
+  // Send the normalised values, so what lands in the sheet is what was read back.
+  var payload = {
+    token: TOKEN,
+    Title: trimmed(values.Title),
+    Legal_Name: trimmed(values.Legal_Name),
+    ID_No: idNormalized(values.ID_No),
+    Date_Of_Issue: trimmed(values.Date_Of_Issue),
+    Permanent_Address: trimmed(values.Permanent_Address),
+    Bank_Account: digitsOnly(values.Bank_Account),
+    Bank_Name: trimmed(values.Bank_Name),
+    Email: trimmed(values.Email),
+    Phone: trimmed(values.Phone).replace(/[^\d+]/g, ''),
+  };
+
+  call('submitCreatorForm', payload).then(showDone).catch(function (error) {
+    renderForm(values, {});
+    var errorNode = document.getElementById('err');
+    errorNode.textContent = error.message;
+    errorNode.classList.remove('is-hidden');
+    errorNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+}
+
+call('getCreatorFormContext', TOKEN).then(function (context) {
+  CONTEXT = context || {};
+  // Vietnamese unless the creator is clearly not Vietnamese; an unset Country
+  // means a record the team created by hand, which in practice is VN.
+  var country = trimmed(CONTEXT.Country);
+  LANG = (!country || /viet|^vn$/i.test(country)) ? 'vi' : 'en';
+  renderForm(CONTEXT, {});
+}).catch(function (error) {
+  showError(error.message);
+});
+</script>
+</body>
+</html>
